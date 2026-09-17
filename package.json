@@ -35,11 +35,12 @@
   },
   "scripts": {
     "start": "expo start",
-    "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "reset": "node ./scripts/reset-project.js",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "kill-8081": "for /f \"tokens=5\" %a in ('netstat -a -o -n ^| findstr :8081') do taskkill /F /PID %a"
   },
   "private": true
 }
