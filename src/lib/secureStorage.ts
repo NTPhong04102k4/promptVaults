@@ -21,22 +21,27 @@ async function getOrCreateKey(storageKey: string): Promise<Uint8Array> {
   return key;
 }
 
+const COUNTER_HEX_LENGTH = 32; // 16 bytes, hex-encoded
+
 export const LargeSecureStore = {
   async getItem(key: string): Promise<string | null> {
-    const encrypted = await AsyncStorage.getItem(key);
-    if (!encrypted) return null;
+    const stored = await AsyncStorage.getItem(key);
+    if (!stored) return null;
 
+    const counterHex = stored.slice(0, COUNTER_HEX_LENGTH);
+    const cipherHex = stored.slice(COUNTER_HEX_LENGTH);
     const keyBytes = await getOrCreateKey(key);
-    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(1));
-    const decryptedBytes = cipher.decrypt(fromHex(encrypted));
+    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(fromHex(counterHex)));
+    const decryptedBytes = cipher.decrypt(fromHex(cipherHex));
     return aesjs.utils.utf8.fromBytes(decryptedBytes);
   },
 
   async setItem(key: string, value: string): Promise<void> {
     const keyBytes = await getOrCreateKey(key);
-    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(1));
+    const counterBytes = await Crypto.getRandomBytesAsync(16);
+    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(counterBytes));
     const encryptedBytes = cipher.encrypt(aesjs.utils.utf8.toBytes(value));
-    await AsyncStorage.setItem(key, toHex(encryptedBytes));
+    await AsyncStorage.setItem(key, toHex(counterBytes) + toHex(encryptedBytes));
   },
 
   async removeItem(key: string): Promise<void> {

@@ -1,6 +1,12 @@
-jest.mock('expo-crypto', () => ({
-  getRandomBytesAsync: jest.fn(async (n: number) => new Uint8Array(n).fill(7)),
-}));
+jest.mock('expo-crypto', () => {
+  let callCount = 0;
+  return {
+    getRandomBytesAsync: jest.fn(async (n: number) => {
+      callCount += 1;
+      return new Uint8Array(n).fill(callCount);
+    }),
+  };
+});
 
 jest.mock('expo-secure-store', () => {
   const store = new Map<string, string>();
@@ -51,5 +57,13 @@ describe('LargeSecureStore', () => {
   it('returns null for a missing key', async () => {
     const result = await LargeSecureStore.getItem('missing-key');
     expect(result).toBeNull();
+  });
+
+  it('uses a fresh counter for each write, so identical plaintexts produce different ciphertext', async () => {
+    await LargeSecureStore.setItem('session', 'same-value');
+    const first = await AsyncStorage.getItem('session');
+    await LargeSecureStore.setItem('session', 'same-value');
+    const second = await AsyncStorage.getItem('session');
+    expect(first).not.toBe(second);
   });
 });
