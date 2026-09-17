@@ -36,6 +36,7 @@
     "@types/react": "~19.2.2",
     "jest": "~29.7.0",
     "jest-expo": "~57.0.5",
+    "sql.js": "^1.14.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -47,12 +48,6 @@
     "lint": "expo lint",
     "test": "jest",
     "kill-8081": "for /f \"tokens=5\" %a in ('netstat -a -o -n ^| findstr :8081') do taskkill /F /PID %a"
-  },
-  "jest": {
-    "preset": "jest-expo",
-    "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg)"
-    ]
   },
   "private": true
 }
