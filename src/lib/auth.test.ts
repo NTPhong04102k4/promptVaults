@@ -10,8 +10,16 @@ jest.mock('./supabase', () => ({
   },
 }));
 
+jest.mock('expo-web-browser', () => ({
+  openAuthSessionAsync: jest.fn(),
+}));
+jest.mock('expo-linking', () => ({
+  createURL: jest.fn(() => 'promptvaults://onboarding/sync'),
+}));
+
+import * as WebBrowser from 'expo-web-browser';
 import { supabase } from './supabase';
-import { signUpWithEmail, signInWithEmail } from './auth';
+import { signUpWithEmail, signInWithEmail, signInWithGoogle } from './auth';
 
 describe('signUpWithEmail', () => {
   it('signs up then inserts a profile row for the new user', async () => {
@@ -81,5 +89,47 @@ describe('signInWithEmail', () => {
     await expect(signInWithEmail({ email: 'a@b.com', password: 'wrong' })).rejects.toThrow(
       'invalid_credentials'
     );
+  });
+});
+
+describe('signInWithGoogle', () => {
+  it('opens the OAuth URL from supabase and sets the session on success', async () => {
+    (supabase.auth.signInWithOAuth as jest.Mock) = jest.fn().mockResolvedValue({
+      data: { url: 'https://supabase.example/oauth/google' },
+      error: null,
+    });
+    (WebBrowser.openAuthSessionAsync as jest.Mock).mockResolvedValue({
+      type: 'success',
+      url: 'promptvaults://onboarding/sync#access_token=abc&refresh_token=def',
+    });
+    (supabase.auth as any).setSession = jest.fn().mockResolvedValue({ error: null });
+
+    await signInWithGoogle();
+
+    expect(supabase.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: 'google',
+      options: { redirectTo: 'promptvaults://onboarding/sync', skipBrowserRedirect: true },
+    });
+    expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledWith(
+      'https://supabase.example/oauth/google',
+      'promptvaults://onboarding/sync'
+    );
+    expect(supabase.auth.setSession).toHaveBeenCalledWith({
+      access_token: 'abc',
+      refresh_token: 'def',
+    });
+  });
+
+  it('does nothing when the user cancels', async () => {
+    (supabase.auth.signInWithOAuth as jest.Mock) = jest.fn().mockResolvedValue({
+      data: { url: 'https://supabase.example/oauth/google' },
+      error: null,
+    });
+    (WebBrowser.openAuthSessionAsync as jest.Mock).mockResolvedValue({ type: 'cancel' });
+    (supabase.auth as any).setSession = jest.fn();
+
+    await signInWithGoogle();
+
+    expect(supabase.auth.setSession).not.toHaveBeenCalled();
   });
 });

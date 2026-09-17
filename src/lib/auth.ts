@@ -1,4 +1,6 @@
 import type { Session } from '@supabase/supabase-js';
+import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
 import { supabase } from './supabase';
 
 export type SignUpInput = {
@@ -47,4 +49,29 @@ export async function getSession(): Promise<Session | null> {
 export function onAuthStateChange(cb: (session: Session | null) => void): () => void {
   const { data } = supabase.auth.onAuthStateChange((_event, session) => cb(session));
   return () => data.subscription.unsubscribe();
+}
+
+export async function signInWithGoogle(): Promise<void> {
+  const redirectTo = Linking.createURL('onboarding/sync');
+
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo, skipBrowserRedirect: true },
+  });
+  if (error) throw new Error(error.message);
+  if (!data.url) throw new Error('missing_oauth_url');
+
+  const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+  if (result.type !== 'success') return;
+
+  const params = new URLSearchParams(result.url.split('#')[1] ?? '');
+  const accessToken = params.get('access_token');
+  const refreshToken = params.get('refresh_token');
+  if (!accessToken || !refreshToken) throw new Error('missing_tokens');
+
+  const { error: sessionError } = await supabase.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+  if (sessionError) throw new Error(sessionError.message);
 }
