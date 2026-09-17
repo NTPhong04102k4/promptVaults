@@ -32,11 +32,19 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ccbec8e0-eefe-4684-aee8-104a25af4a96"
+      }
+    },
+    "owner": "12333kkkdsaf"
   }
 }
