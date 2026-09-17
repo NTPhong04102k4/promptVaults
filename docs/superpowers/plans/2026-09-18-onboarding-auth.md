@@ -24,14 +24,16 @@
 
 ---
 
-### Task 0: Fix `.env` formatting and install new dependency
+### Task 0: Fix `.env` formatting, install AsyncStorage, set up Jest
 
 **Files:**
 - Modify: `.env`
 - Modify: `package.json`
+- Modify: `tsconfig.json`
 
 **Interfaces:**
 - Produces: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` as two cleanly separated lines, readable by `expo-constants`/`process.env` at build time.
+- Produces: a working `yarn jest <path>` command — no test infrastructure exists in this repo yet, and every later task's test steps depend on it.
 
 - [ ] **Step 1: Fix the `.env` file**
 
@@ -53,11 +55,37 @@ Run: `yarn add @react-native-async-storage/async-storage`
 Run: `yarn why @react-native-async-storage/async-storage`
 Expected: prints the resolved version, no error.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Install Jest**
+
+Run: `npx expo install jest-expo jest @types/jest --dev` (this resolves SDK-~57-compatible versions automatically; it detects and uses `yarn` since `yarn.lock` is present).
+
+- [ ] **Step 5: Configure Jest**
+
+Add to `package.json` (alongside the existing top-level keys, e.g. after `"scripts"`):
+
+```json
+"jest": {
+  "preset": "jest-expo",
+  "transformIgnorePatterns": [
+    "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg)"
+  ]
+}
+```
+
+Add `"test": "jest"` to the existing `"scripts"` block.
+
+Add to `tsconfig.json`'s `compilerOptions` (alongside the existing `"strict"` and `"paths"` keys): `"types": ["jest"]`.
+
+- [ ] **Step 6: Verify Jest runs**
+
+Run: `yarn jest --listTests`
+Expected: exits 0 and prints "No tests found" (or an empty list) — confirms the preset and config resolve correctly with zero test files present yet.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add .env package.json yarn.lock
-git commit -m "chore: fix env formatting, add AsyncStorage dependency"
+git add .env package.json yarn.lock tsconfig.json
+git commit -m "chore: fix env formatting, add AsyncStorage, set up Jest"
 ```
 
 ---
