@@ -20,6 +20,7 @@
 - Env vars already present in `.env`: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. **Note:** the current `.env` file is missing a newline between the first two variable lines (`...ElGQhjTsEXPO_PUBLIC_SUPABASE_URL=...` runs together) — Task 1 includes a step to fix this before it's read anywhere.
 - Supabase session storage is encrypted at rest (AES via `aes-js`, key held in `expo-secure-store`) — never revert to storing the raw session in plain `AsyncStorage` (spec §9).
 - Biometric app lock is opt-in and defaults OFF; it must never block the guest/local-only flow for a user who hasn't enabled it (spec §9, and the Global Constraint above about guests never being gated).
+- `.env` is intentionally excluded by `.gitignore` (`.env*` pattern) and must never be `git add`ed or force-added — it holds real Supabase project credentials. Fix its formatting in place (Task 0) without staging or committing it.
 - No local prompts CRUD exists yet in this repo. This plan creates the minimal local schema (`vaults`, `prompts`, FTS5) needed to have something to sync — it does not build prompt CRUD UI (save/search/copy screens are a separate, already-noted future spec).
 
 ---
@@ -84,7 +85,7 @@ Expected: exits 0 and prints "No tests found" (or an empty list) — confirms th
 - [ ] **Step 7: Commit**
 
 ```bash
-git add .env package.json yarn.lock tsconfig.json
+git add package.json yarn.lock tsconfig.json
 git commit -m "chore: fix env formatting, add AsyncStorage, set up Jest"
 ```
 
