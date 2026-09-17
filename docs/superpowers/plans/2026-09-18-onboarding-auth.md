@@ -1358,15 +1358,21 @@ git commit -m "feat: add sync screen with two-way push/pull for multi-device"
 
 - [ ] **Step 1: Install dependencies**
 
-Run: `yarn add expo-secure-store aes-js` then `yarn add -D @types/aes-js`
+Run: `yarn add expo-secure-store expo-crypto aes-js` then `yarn add -D @types/aes-js` (`expo-crypto` was missing from this list originally — the implementation below imports it directly, so it must be installed here, not left as an incidental transitive dependency).
 
 - [ ] **Step 2: Write the failing test**
 
 ```typescript
 // src/lib/secureStorage.test.ts
-jest.mock('expo-crypto', () => ({
-  getRandomBytesAsync: jest.fn(async (n: number) => new Uint8Array(n).fill(7)),
-}));
+jest.mock('expo-crypto', () => {
+  let callCount = 0;
+  return {
+    getRandomBytesAsync: jest.fn(async (n: number) => {
+      callCount += 1;
+      return new Uint8Array(n).fill(callCount);
+    }),
+  };
+});
 
 jest.mock('expo-secure-store', () => {
   const store = new Map<string, string>();
@@ -1418,6 +1424,14 @@ describe('LargeSecureStore', () => {
     const result = await LargeSecureStore.getItem('missing-key');
     expect(result).toBeNull();
   });
+
+  it('uses a fresh counter for each write, so identical plaintexts produce different ciphertext', async () => {
+    await LargeSecureStore.setItem('session', 'same-value');
+    const first = await AsyncStorage.getItem('session');
+    await LargeSecureStore.setItem('session', 'same-value');
+    const second = await AsyncStorage.getItem('session');
+    expect(first).not.toBe(second);
+  });
 });
 ```
 
@@ -1427,6 +1441,8 @@ Run: `yarn jest src/lib/secureStorage.test.ts`
 Expected: FAIL — `Cannot find module './secureStorage'`
 
 - [ ] **Step 4: Write minimal implementation**
+
+**Security note:** AES-CTR mode is only safe if the (key, counter) pair is never reused across two different plaintexts encrypted under the same key. Since the key is persisted and reused for every write to a given storage key (e.g. every session refresh), each `setItem` call generates and stores a fresh random 16-byte counter alongside the ciphertext, and `getItem` extracts that counter back out — never a fixed counter value.
 
 ```typescript
 // src/lib/secureStorage.ts
@@ -1453,22 +1469,27 @@ async function getOrCreateKey(storageKey: string): Promise<Uint8Array> {
   return key;
 }
 
+const COUNTER_HEX_LENGTH = 32; // 16 bytes, hex-encoded
+
 export const LargeSecureStore = {
   async getItem(key: string): Promise<string | null> {
-    const encrypted = await AsyncStorage.getItem(key);
-    if (!encrypted) return null;
+    const stored = await AsyncStorage.getItem(key);
+    if (!stored) return null;
 
+    const counterHex = stored.slice(0, COUNTER_HEX_LENGTH);
+    const cipherHex = stored.slice(COUNTER_HEX_LENGTH);
     const keyBytes = await getOrCreateKey(key);
-    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(1));
-    const decryptedBytes = cipher.decrypt(fromHex(encrypted));
+    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(fromHex(counterHex)));
+    const decryptedBytes = cipher.decrypt(fromHex(cipherHex));
     return aesjs.utils.utf8.fromBytes(decryptedBytes);
   },
 
   async setItem(key: string, value: string): Promise<void> {
     const keyBytes = await getOrCreateKey(key);
-    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(1));
+    const counterBytes = await Crypto.getRandomBytesAsync(16);
+    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(counterBytes));
     const encryptedBytes = cipher.encrypt(aesjs.utils.utf8.toBytes(value));
-    await AsyncStorage.setItem(key, toHex(encryptedBytes));
+    await AsyncStorage.setItem(key, toHex(counterBytes) + toHex(encryptedBytes));
   },
 
   async removeItem(key: string): Promise<void> {
@@ -1481,7 +1502,7 @@ export const LargeSecureStore = {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `yarn jest src/lib/secureStorage.test.ts`
-Expected: PASS (3 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 6: Commit**
 
