@@ -46,8 +46,12 @@ export async function pushLocalPromptsToCloud(): Promise<{ synced: number; faile
       continue;
     }
 
-    await db.runAsync('UPDATE prompts SET synced_at = ? WHERE id = ?', Date.now(), row.id);
-    synced += 1;
+    try {
+      await db.runAsync('UPDATE prompts SET synced_at = ? WHERE id = ?', Date.now(), row.id);
+      synced += 1;
+    } catch {
+      failed += 1;
+    }
   }
 
   return { synced, failed };

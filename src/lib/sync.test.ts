@@ -48,4 +48,20 @@ describe('pushLocalPromptsToCloud', () => {
 
     expect(result).toEqual({ synced: 0, failed: 1 });
   });
+
+  it('counts a failed runAsync without throwing', async () => {
+    const rows = [
+      { id: 'p1', vault_id: 'v1', title: 'T1', content: 'C1', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 2 },
+    ];
+    const runAsync = jest.fn().mockRejectedValue(new Error('db error'));
+    const db = { getAllAsync: jest.fn().mockResolvedValue(rows), runAsync };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const upsert = jest.fn().mockResolvedValue({ error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ upsert });
+
+    const result = await pushLocalPromptsToCloud();
+
+    expect(result).toEqual({ synced: 0, failed: 1 });
+  });
 });
