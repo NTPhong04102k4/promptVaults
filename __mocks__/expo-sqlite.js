@@ -1,13 +1,5 @@
 // Mock expo-sqlite for testing
 const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
-
-// Create a temporary directory for test databases
-const testDbDir = path.join(__dirname, '..', '.test-db');
-if (!fs.existsSync(testDbDir)) {
-  fs.mkdirSync(testDbDir, { recursive: true });
-}
 
 const databases = {};
 
@@ -44,9 +36,9 @@ class MockSQLiteDatabase {
 }
 
 async function openDatabaseAsync(dbName) {
+  // Use in-memory database; memoize by dbName to match db.ts's single-open-per-process pattern
   if (!databases[dbName]) {
-    const dbPath = path.join(testDbDir, dbName);
-    const sqliteDb = new Database(dbPath);
+    const sqliteDb = new Database(':memory:');
     databases[dbName] = new MockSQLiteDatabase(sqliteDb);
   }
   return databases[dbName];
