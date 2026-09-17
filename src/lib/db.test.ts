@@ -36,8 +36,8 @@ describe('getDb', () => {
   it('syncs FTS5 when inserting prompts', async () => {
     const db = await getDb();
 
-    // Insert a prompt into the personal vault
-    const promptId = 'test-prompt-1';
+    // Insert a prompt into the personal vault with a unique ID
+    const promptId = `test-prompt-${Date.now()}`;
     const now = Date.now();
     await db.runAsync(
       `INSERT INTO prompts (id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
