@@ -11,14 +11,24 @@ function fromHex(hex: string): Uint8Array {
   return aesjs.utils.hex.toBytes(hex);
 }
 
+const keyCreationPromises = new Map<string, Promise<Uint8Array>>();
+
 async function getOrCreateKey(storageKey: string): Promise<Uint8Array> {
   const keyName = `${storageKey}_enc_key`;
   const existing = await SecureStore.getItemAsync(keyName);
   if (existing) return fromHex(existing);
 
-  const key = await Crypto.getRandomBytesAsync(32);
-  await SecureStore.setItemAsync(keyName, toHex(key));
-  return key;
+  if (!keyCreationPromises.has(keyName)) {
+    keyCreationPromises.set(
+      keyName,
+      (async () => {
+        const key = await Crypto.getRandomBytesAsync(32);
+        await SecureStore.setItemAsync(keyName, toHex(key));
+        return key;
+      })()
+    );
+  }
+  return keyCreationPromises.get(keyName)!;
 }
 
 const COUNTER_HEX_LENGTH = 32; // 16 bytes, hex-encoded

@@ -38,6 +38,7 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 });
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import { LargeSecureStore } from './secureStorage';
 
 describe('LargeSecureStore', () => {
@@ -65,5 +66,12 @@ describe('LargeSecureStore', () => {
     await LargeSecureStore.setItem('session', 'same-value');
     const second = await AsyncStorage.getItem('session');
     expect(first).not.toBe(second);
+  });
+
+  it('removes both the stored value and the encryption key', async () => {
+    await LargeSecureStore.setItem('session', 'plaintext-value');
+    await LargeSecureStore.removeItem('session');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('session');
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('session_enc_key');
   });
 });
