@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { View, TextInput, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { signInWithEmail, signUpWithEmail } from '@/lib/auth';
+import { signInWithEmail, signUpWithEmail, signInWithGoogle } from '@/lib/auth';
 
 const ERROR_MESSAGES: Record<string, string> = {
   user_already_exists: 'Email này đã được đăng ký.',
@@ -37,6 +37,19 @@ export default function AuthScreen() {
       } else {
         await signInWithEmail({ email, password });
       }
+      router.replace('/onboarding/sync');
+    } catch (e) {
+      setError(friendlyError(e instanceof Error ? e.message : String(e)));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleGoogleSignIn() {
+    setError(null);
+    setLoading(true);
+    try {
+      await signInWithGoogle();
       router.replace('/onboarding/sync');
     } catch (e) {
       setError(friendlyError(e instanceof Error ? e.message : String(e)));
@@ -104,6 +117,10 @@ export default function AuthScreen() {
           {mode === 'signup' ? 'Đã có tài khoản? Đăng nhập' : 'Chưa có tài khoản? Đăng ký'}
         </Text>
       </Pressable>
+
+      <Pressable style={styles.googleButton} onPress={handleGoogleSignIn} disabled={loading}>
+        <Text style={styles.googleButtonText}>Tiếp tục với Google</Text>
+      </Pressable>
     </View>
   );
 }
@@ -116,4 +133,6 @@ const styles = StyleSheet.create({
   buttonText: { color: '#fff', fontWeight: '600' },
   error: { color: '#D14343' },
   switchText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
+  googleButton: { borderWidth: 1, borderColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 8 },
+  googleButtonText: { color: '#208AEF', fontWeight: '600' },
 });
