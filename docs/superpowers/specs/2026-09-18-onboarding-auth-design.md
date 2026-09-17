@@ -102,7 +102,7 @@ ALTER TABLE prompts ADD COLUMN synced_at INTEGER;
 
 ## 6. Auth integration
 
-- New module `src/lib/supabase.ts`: creates and exports the `supabase` client (`createClient` with `AsyncStorage`-backed session persistence — `@react-native-async-storage/async-storage` needs to be added as a dependency, it isn't in package.json yet).
+- New module `src/lib/supabase.ts`: creates and exports the `supabase` client (`createClient` with encrypted session persistence via `src/lib/secureStorage.ts`'s `LargeSecureStore` — see §9 — built on top of `@react-native-async-storage/async-storage`, added as a dependency in Stage 1).
 - New module `src/lib/auth.ts`: thin wrappers —
   - `signUpWithEmail({ email, password, firstName, lastName, username })` → calls `supabase.auth.signUp`, then inserts the `profiles` row.
   - `signInWithEmail({ email, password })` → `supabase.auth.signInWithPassword`.
@@ -124,11 +124,31 @@ ALTER TABLE prompts ADD COLUMN synced_at INTEGER;
 - Unit tests for `src/lib/auth.ts` and `src/lib/sync.ts` against a mocked `supabase-js` client (no live network in tests).
 - Manual test plan (run via `run` skill against Expo dev server): guest flow never sees auth screens; sign-up creates a `profiles` row; sign-in with wrong password shows inline error; Google SSO round-trips back to the app; sync pushes local prompts and sets `synced_at`.
 
-## 9. Staged rollout
+## 9. Security hardening — encrypted token storage + biometric app lock
+
+Two related but independent additions, both scoped to this spec because they touch the same `src/lib/supabase.ts` storage wiring:
+
+**Encrypted session storage (always on, no user setting):**
+- Plain `AsyncStorage` (Task 2's original design) stores the Supabase session — access token + refresh token + user object — as **plaintext JSON**. On a rooted/jailbroken device, or from a filesystem backup, that's directly readable.
+- Replace it with a `LargeSecureStore` adapter in `src/lib/secureStorage.ts`, following the standard Expo+Supabase pattern for React Native (SecureStore alone can't hold a full session — Expo's own docs note payloads over roughly 2048 bytes can be rejected by the OS keychain):
+  1. Generate a random 256-bit AES key via `expo-crypto`'s `getRandomBytesAsync(32)`.
+  2. Store that key in `expo-secure-store` (hardware-backed Keychain on iOS / Keystore-backed EncryptedSharedPreferences on Android) — small (32 bytes), well under the size limit.
+  3. Encrypt the actual session JSON with that key (AES-CTR via the `aes-js` pure-JS library — no native module needed, works in Expo Go and dev builds) and store the ciphertext in `AsyncStorage`, which has no practical size limit.
+  4. On read: fetch the key from SecureStore, decrypt the ciphertext from AsyncStorage.
+- This key is **not** gated by `requireAuthentication` — reading it (and thus the session) happens silently in the background so Supabase's `autoRefreshToken` isn't interrupted by a biometric prompt on every app resume. The security property is "encrypted at rest," not "requires biometric every read."
+
+**Biometric app lock (opt-in, default OFF):**
+- A Settings toggle ("Khoá bằng vân tay/Face ID") persisted in `AsyncStorage` under `appLockEnabled`. Default is off — matches the "no friction for local/guest use" principle; a user who never logs in never sees this either.
+- Uses `expo-local-authentication`: `hasHardwareAsync()` + `isEnrolledAsync()` to check the device supports it before showing the toggle at all; `authenticateAsync({ promptMessage: 'Mở khoá PromptVault' })` to gate access.
+- When enabled, the root layout shows a full-screen "Lock" view on cold start and on foreground-resume-from-background, blocking navigation until `authenticateAsync` resolves `{ success: true }`. Cancelling or failing keeps the lock screen up with a retry button — no automatic fallback to a password prompt (device passcode fallback is handled by the OS dialog itself when biometrics fail, since `disableDeviceFallback` is left `false`).
+- This is unrelated to Supabase auth state — it can be enabled even in guest/local-only mode, since it protects the local SQLite vault too, not just a cloud session.
+
+## 10. Staged rollout
 
 - **Stage 1 — Local groundwork:** add `synced_at` column + migration, add `src/lib/supabase.ts` client setup, add env vars and `@react-native-async-storage/async-storage` dependency. No UI yet; nothing user-visible changes.
 - **Stage 2 — Email/password auth:** Welcome screen, Auth screen (sign up + sign in forms), `src/lib/auth.ts` email methods, session-aware entry point in the existing UI. Google button not wired yet (hidden/disabled).
 - **Stage 3 — Google SSO:** wire `signInWithGoogle()`, OAuth redirect handling, enable the Google button.
 - **Stage 4 — Sync:** `src/lib/sync.ts` (`pushLocalPromptsToCloud` + `pullCloudPromptsToLocal`), Sync Prompt screen, "Đồng bộ ngay / Để sau" choice after login. "Đồng bộ ngay" runs push then pull so a second device on the same account converges to the same personal vault.
+- **Stage 5 — Security hardening:** `src/lib/secureStorage.ts` (`LargeSecureStore`), wired into `src/lib/supabase.ts`; `src/lib/biometric.ts`; Settings screen with the app-lock toggle; root-layout lock gate.
 
 Each stage ships a working, independently testable slice; Stage 1 alone changes nothing user-facing, Stage 2 alone gives working email auth without SSO or sync, etc.

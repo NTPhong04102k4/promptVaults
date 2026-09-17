@@ -6,7 +6,7 @@
 
 **Architecture:** A local-first Expo Router app (SQLite via `expo-sqlite`) gains a thin Supabase layer (`src/lib/supabase.ts`, `src/lib/auth.ts`, `src/lib/sync.ts`) and three new screens (Welcome, Auth, Sync). The existing local-only home screen is untouched as the default entry point; auth is reached only through an explicit "Đăng nhập để đồng bộ" action.
 
-**Tech Stack:** Expo SDK ~57 (`expo-sqlite` async API, `expo-router`, `expo-web-browser`), `@supabase/supabase-js`, `@react-native-async-storage/async-storage` (new dependency).
+**Tech Stack:** Expo SDK ~57 (`expo-sqlite` async API, `expo-router`, `expo-web-browser`, `expo-secure-store`, `expo-local-authentication`, `expo-crypto`), `@supabase/supabase-js`, `@react-native-async-storage/async-storage`, `aes-js` (new dependencies, installed across Tasks 0, 12, and 14).
 
 **Spec:** `docs/superpowers/specs/2026-09-18-onboarding-auth-design.md`
 
@@ -18,6 +18,8 @@
 - Sync is manual (button tap does one push pass + one pull pass), not a background/realtime engine (spec §2).
 - Use only Expo SDK ~57 APIs: `SQLite.openDatabaseAsync`, `db.execAsync`/`db.runAsync`/`db.getFirstAsync`, `WebBrowser.openAuthSessionAsync(url, redirectUrl)` (verified against https://docs.expo.dev/versions/v57.0.0/).
 - Env vars already present in `.env`: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. **Note:** the current `.env` file is missing a newline between the first two variable lines (`...ElGQhjTsEXPO_PUBLIC_SUPABASE_URL=...` runs together) — Task 1 includes a step to fix this before it's read anywhere.
+- Supabase session storage is encrypted at rest (AES via `aes-js`, key held in `expo-secure-store`) — never revert to storing the raw session in plain `AsyncStorage` (spec §9).
+- Biometric app lock is opt-in and defaults OFF; it must never block the guest/local-only flow for a user who hasn't enabled it (spec §9, and the Global Constraint above about guests never being gated).
 - No local prompts CRUD exists yet in this repo. This plan creates the minimal local schema (`vaults`, `prompts`, FTS5) needed to have something to sync — it does not build prompt CRUD UI (save/search/copy screens are a separate, already-noted future spec).
 
 ---
@@ -1315,11 +1317,565 @@ git commit -m "feat: add sync screen with two-way push/pull for multi-device"
 
 ---
 
+### Task 12: Encrypted session storage adapter
+
+**Files:**
+- Create: `src/lib/secureStorage.ts`
+- Test: `src/lib/secureStorage.test.ts`
+- Modify: `package.json` (new dependencies)
+
+**Interfaces:**
+- Produces: `LargeSecureStore: { getItem, setItem, removeItem }` — a `SupportedStorage`-shaped object matching what `supabase-js`'s `auth.storage` expects, consumed by Task 13.
+
+- [ ] **Step 1: Install dependencies**
+
+Run: `yarn add expo-secure-store aes-js` then `yarn add -D @types/aes-js`
+
+- [ ] **Step 2: Write the failing test**
+
+```typescript
+// src/lib/secureStorage.test.ts
+jest.mock('expo-crypto', () => ({
+  getRandomBytesAsync: jest.fn(async (n: number) => new Uint8Array(n).fill(7)),
+}));
+
+jest.mock('expo-secure-store', () => {
+  const store = new Map<string, string>();
+  return {
+    getItemAsync: jest.fn(async (k: string) => store.get(k) ?? null),
+    setItemAsync: jest.fn(async (k: string, v: string) => {
+      store.set(k, v);
+    }),
+    deleteItemAsync: jest.fn(async (k: string) => {
+      store.delete(k);
+    }),
+  };
+});
+
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const store = new Map<string, string>();
+  return {
+    __esModule: true,
+    default: {
+      getItem: jest.fn(async (k: string) => store.get(k) ?? null),
+      setItem: jest.fn(async (k: string, v: string) => {
+        store.set(k, v);
+      }),
+      removeItem: jest.fn(async (k: string) => {
+        store.delete(k);
+      }),
+    },
+  };
+});
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LargeSecureStore } from './secureStorage';
+
+describe('LargeSecureStore', () => {
+  it('round-trips a value through encryption', async () => {
+    await LargeSecureStore.setItem('session', 'plaintext-value');
+    const result = await LargeSecureStore.getItem('session');
+    expect(result).toBe('plaintext-value');
+  });
+
+  it('stores ciphertext, not the plaintext, in AsyncStorage', async () => {
+    await LargeSecureStore.setItem('session', 'plaintext-value');
+    const raw = await AsyncStorage.getItem('session');
+    expect(raw).not.toBe('plaintext-value');
+    expect(raw).not.toContain('plaintext-value');
+  });
+
+  it('returns null for a missing key', async () => {
+    const result = await LargeSecureStore.getItem('missing-key');
+    expect(result).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `yarn jest src/lib/secureStorage.test.ts`
+Expected: FAIL — `Cannot find module './secureStorage'`
+
+- [ ] **Step 4: Write minimal implementation**
+
+```typescript
+// src/lib/secureStorage.ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+import * as Crypto from 'expo-crypto';
+import * as aesjs from 'aes-js';
+
+function toHex(bytes: Uint8Array): string {
+  return aesjs.utils.hex.fromBytes(bytes);
+}
+
+function fromHex(hex: string): Uint8Array {
+  return aesjs.utils.hex.toBytes(hex);
+}
+
+async function getOrCreateKey(storageKey: string): Promise<Uint8Array> {
+  const keyName = `${storageKey}_enc_key`;
+  const existing = await SecureStore.getItemAsync(keyName);
+  if (existing) return fromHex(existing);
+
+  const key = await Crypto.getRandomBytesAsync(32);
+  await SecureStore.setItemAsync(keyName, toHex(key));
+  return key;
+}
+
+export const LargeSecureStore = {
+  async getItem(key: string): Promise<string | null> {
+    const encrypted = await AsyncStorage.getItem(key);
+    if (!encrypted) return null;
+
+    const keyBytes = await getOrCreateKey(key);
+    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(1));
+    const decryptedBytes = cipher.decrypt(fromHex(encrypted));
+    return aesjs.utils.utf8.fromBytes(decryptedBytes);
+  },
+
+  async setItem(key: string, value: string): Promise<void> {
+    const keyBytes = await getOrCreateKey(key);
+    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(1));
+    const encryptedBytes = cipher.encrypt(aesjs.utils.utf8.toBytes(value));
+    await AsyncStorage.setItem(key, toHex(encryptedBytes));
+  },
+
+  async removeItem(key: string): Promise<void> {
+    await AsyncStorage.removeItem(key);
+    await SecureStore.deleteItemAsync(`${key}_enc_key`);
+  },
+};
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `yarn jest src/lib/secureStorage.test.ts`
+Expected: PASS (3 tests)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/secureStorage.ts src/lib/secureStorage.test.ts package.json yarn.lock
+git commit -m "feat: add AES-encrypted large secure store for session persistence"
+```
+
+---
+
+### Task 13: Wire encrypted storage into the Supabase client
+
+**Files:**
+- Modify: `src/lib/supabase.ts`
+- Modify: `src/lib/supabase.test.ts`
+
+**Interfaces:**
+- Consumes: `LargeSecureStore` from `src/lib/secureStorage.ts` (Task 12).
+
+- [ ] **Step 1: Update the implementation**
+
+```typescript
+// src/lib/supabase.ts — replace the AsyncStorage import and storage option
+import { createClient } from '@supabase/supabase-js';
+import { LargeSecureStore } from './secureStorage';
+
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    storage: LargeSecureStore,
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
+  },
+});
+```
+
+- [ ] **Step 2: Run the existing test to verify it fails**
+
+Run: `yarn jest src/lib/supabase.test.ts`
+Expected: FAIL — error thrown by `expo-secure-store`/`expo-crypto`/`aes-js` native module resolution when `secureStorage.ts` loads unmocked in the test environment.
+
+- [ ] **Step 3: Add the required mocks to the test**
+
+```typescript
+// src/lib/supabase.test.ts — add above the existing import
+jest.mock('expo-crypto', () => ({
+  getRandomBytesAsync: jest.fn(async (n: number) => new Uint8Array(n).fill(7)),
+}));
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: jest.fn(async () => null),
+  setItemAsync: jest.fn(async () => undefined),
+  deleteItemAsync: jest.fn(async () => undefined),
+}));
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: {
+    getItem: jest.fn(async () => null),
+    setItem: jest.fn(async () => undefined),
+    removeItem: jest.fn(async () => undefined),
+  },
+}));
+
+import { supabase } from './supabase';
+
+describe('supabase client', () => {
+  it('is configured with auth persistence enabled', () => {
+    expect(supabase).toBeDefined();
+    expect(supabase.auth).toBeDefined();
+  });
+});
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `yarn jest src/lib/supabase.test.ts`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/supabase.ts src/lib/supabase.test.ts
+git commit -m "feat: encrypt persisted Supabase session with LargeSecureStore"
+```
+
+---
+
+### Task 14: Biometric authentication wrapper
+
+**Files:**
+- Create: `src/lib/biometric.ts`
+- Test: `src/lib/biometric.test.ts`
+- Modify: `app.json` (expo-local-authentication plugin config)
+- Modify: `package.json`
+
+**Interfaces:**
+- Produces: `isBiometricAvailable(): Promise<boolean>`, `authenticateWithBiometric(): Promise<boolean>` — consumed by the Settings screen and root layout lock gate (Task 16).
+
+- [ ] **Step 1: Install the dependency**
+
+Run: `yarn add expo-local-authentication`
+
+- [ ] **Step 2: Add the Expo config plugin**
+
+```json
+// app.json — inside "expo.plugins", alongside the existing entries
+[
+  "expo-local-authentication",
+  {
+    "faceIDPermission": "Cho phép PromptVault dùng Face ID để mở khoá app."
+  }
+]
+```
+
+- [ ] **Step 3: Write the failing test**
+
+```typescript
+// src/lib/biometric.test.ts
+jest.mock('expo-local-authentication', () => ({
+  hasHardwareAsync: jest.fn(),
+  isEnrolledAsync: jest.fn(),
+  authenticateAsync: jest.fn(),
+}));
+
+import * as LocalAuthentication from 'expo-local-authentication';
+import { isBiometricAvailable, authenticateWithBiometric } from './biometric';
+
+describe('isBiometricAvailable', () => {
+  it('is false when the device has no biometric hardware', async () => {
+    (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(false);
+
+    expect(await isBiometricAvailable()).toBe(false);
+  });
+
+  it('is false when hardware exists but nothing is enrolled', async () => {
+    (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
+    (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(false);
+
+    expect(await isBiometricAvailable()).toBe(false);
+  });
+
+  it('is true when hardware exists and is enrolled', async () => {
+    (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
+    (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
+
+    expect(await isBiometricAvailable()).toBe(true);
+  });
+});
+
+describe('authenticateWithBiometric', () => {
+  it('returns true on success', async () => {
+    (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: true });
+
+    expect(await authenticateWithBiometric()).toBe(true);
+  });
+
+  it('returns false on failure or cancel', async () => {
+    (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: false });
+
+    expect(await authenticateWithBiometric()).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 4: Run tests to verify they fail**
+
+Run: `yarn jest src/lib/biometric.test.ts`
+Expected: FAIL — `Cannot find module './biometric'`
+
+- [ ] **Step 5: Write minimal implementation**
+
+```typescript
+// src/lib/biometric.ts
+import * as LocalAuthentication from 'expo-local-authentication';
+
+export async function isBiometricAvailable(): Promise<boolean> {
+  const hasHardware = await LocalAuthentication.hasHardwareAsync();
+  if (!hasHardware) return false;
+  return LocalAuthentication.isEnrolledAsync();
+}
+
+export async function authenticateWithBiometric(): Promise<boolean> {
+  const result = await LocalAuthentication.authenticateAsync({
+    promptMessage: 'Mở khoá PromptVault',
+  });
+  return result.success;
+}
+```
+
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run: `yarn jest src/lib/biometric.test.ts`
+Expected: PASS (5 tests)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/lib/biometric.ts src/lib/biometric.test.ts app.json package.json yarn.lock
+git commit -m "feat: add biometric authentication wrapper"
+```
+
+---
+
+### Task 15: App-lock preference storage
+
+**Files:**
+- Create: `src/lib/appLock.ts`
+- Test: `src/lib/appLock.test.ts`
+
+**Interfaces:**
+- Produces: `isAppLockEnabled(): Promise<boolean>`, `setAppLockEnabled(enabled: boolean): Promise<void>` — consumed by the Settings screen and root layout (Task 16).
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// src/lib/appLock.test.ts
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const store = new Map<string, string>();
+  return {
+    __esModule: true,
+    default: {
+      getItem: jest.fn(async (k: string) => store.get(k) ?? null),
+      setItem: jest.fn(async (k: string, v: string) => {
+        store.set(k, v);
+      }),
+    },
+  };
+});
+
+import { isAppLockEnabled, setAppLockEnabled } from './appLock';
+
+describe('appLock', () => {
+  it('defaults to disabled', async () => {
+    expect(await isAppLockEnabled()).toBe(false);
+  });
+
+  it('persists true after being enabled', async () => {
+    await setAppLockEnabled(true);
+    expect(await isAppLockEnabled()).toBe(true);
+  });
+
+  it('persists false after being disabled again', async () => {
+    await setAppLockEnabled(true);
+    await setAppLockEnabled(false);
+    expect(await isAppLockEnabled()).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `yarn jest src/lib/appLock.test.ts`
+Expected: FAIL — `Cannot find module './appLock'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// src/lib/appLock.ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const APP_LOCK_KEY = 'appLockEnabled';
+
+export async function isAppLockEnabled(): Promise<boolean> {
+  const value = await AsyncStorage.getItem(APP_LOCK_KEY);
+  return value === 'true';
+}
+
+export async function setAppLockEnabled(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(APP_LOCK_KEY, enabled ? 'true' : 'false');
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `yarn jest src/lib/appLock.test.ts`
+Expected: PASS (3 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/appLock.ts src/lib/appLock.test.ts
+git commit -m "feat: add app-lock preference storage"
+```
+
+---
+
+### Task 16: Settings screen and root-layout lock gate
+
+**Files:**
+- Create: `src/app/settings.tsx`
+- Modify: `src/app/_layout.tsx`
+
+**Interfaces:**
+- Consumes: `isBiometricAvailable`, `authenticateWithBiometric` (Task 14); `isAppLockEnabled`, `setAppLockEnabled` (Task 15).
+
+- [ ] **Step 1: Implement the Settings screen**
+
+```typescript
+// src/app/settings.tsx
+import { useEffect, useState } from 'react';
+import { View, Text, Switch, StyleSheet } from 'react-native';
+import { isBiometricAvailable, authenticateWithBiometric } from '@/lib/biometric';
+import { isAppLockEnabled, setAppLockEnabled } from '@/lib/appLock';
+
+export default function SettingsScreen() {
+  const [available, setAvailable] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+
+  useEffect(() => {
+    isBiometricAvailable().then(setAvailable);
+    isAppLockEnabled().then(setEnabled);
+  }, []);
+
+  async function handleToggle(next: boolean) {
+    if (next) {
+      const confirmed = await authenticateWithBiometric();
+      if (!confirmed) return;
+    }
+    await setAppLockEnabled(next);
+    setEnabled(next);
+  }
+
+  if (!available) return null;
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.row}>
+        <Text style={styles.label}>Khoá bằng vân tay/Face ID</Text>
+        <Switch value={enabled} onValueChange={handleToggle} />
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, padding: 24 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  label: { fontSize: 16 },
+});
+```
+
+- [ ] **Step 2: Implement the root-layout lock gate**
+
+```typescript
+// src/app/_layout.tsx
+import { useEffect, useRef, useState } from 'react';
+import { AppState, AppStateStatus, View, Text, Pressable, StyleSheet } from 'react-native';
+import { Stack } from 'expo-router';
+import { isAppLockEnabled } from '@/lib/appLock';
+import { authenticateWithBiometric } from '@/lib/biometric';
+
+export default function RootLayout() {
+  const [checked, setChecked] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const appState = useRef<AppStateStatus>(AppState.currentState);
+
+  async function checkLock() {
+    const enabled = await isAppLockEnabled();
+    setLocked(enabled);
+    setChecked(true);
+  }
+
+  useEffect(() => {
+    checkLock();
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (appState.current.match(/inactive|background/) && next === 'active') {
+        checkLock();
+      }
+      appState.current = next;
+    });
+    return () => subscription.remove();
+  }, []);
+
+  async function handleUnlock() {
+    const success = await authenticateWithBiometric();
+    if (success) setLocked(false);
+  }
+
+  if (!checked) return null;
+
+  if (locked) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>PromptVault đã khoá</Text>
+        <Pressable style={styles.button} onPress={handleUnlock}>
+          <Text style={styles.buttonText}>Mở khoá</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return <Stack />;
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
+  title: { fontSize: 20, fontWeight: '600' },
+  button: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14 },
+  buttonText: { color: '#fff', fontWeight: '600' },
+});
+```
+
+- [ ] **Step 3: Manual verification**
+
+Run: `yarn start` on a device/simulator with biometrics enrolled. Confirm: Settings screen hides the toggle entirely on a device without biometric hardware; enabling the toggle prompts biometric auth immediately (as a confirmation, not just a checkbox flip); after enabling, backgrounding and foregrounding the app shows the lock screen and requires a successful `authenticateAsync` before `<Stack />` renders; disabling the toggle removes the lock on next launch.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/app/settings.tsx src/app/_layout.tsx
+git commit -m "feat: add biometric app-lock settings toggle and lock gate"
+```
+
+---
+
 ## Stage Summary
 
 - **Stage 1 (Tasks 0-3):** env fix, local schema, Supabase client, Supabase tables/RLS. No user-visible change.
 - **Stage 2 (Tasks 4-6):** working email/password auth end-to-end, session-aware home screen.
 - **Stage 3 (Tasks 7-8):** Google SSO added to the same Auth screen.
 - **Stage 4 (Tasks 9-11):** two-way sync (push local → cloud, pull cloud → local) so the same account's personal vault converges across devices.
+- **Stage 5 (Tasks 12-16):** encrypted session storage (always on) and an opt-in biometric app lock protecting both the cloud session and the local vault.
 
 Each stage's tasks can ship and be demoed independently; later stages only add to what's already working.
