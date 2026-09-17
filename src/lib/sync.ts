@@ -56,3 +56,60 @@ export async function pushLocalPromptsToCloud(): Promise<{ synced: number; faile
 
   return { synced, failed };
 }
+
+import { PERSONAL_VAULT_ID } from './db';
+
+type CloudPromptRow = {
+  id: string;
+  title: string;
+  content: string;
+  category: string | null;
+  tags: string | null;
+  is_favorite: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export async function pullCloudPromptsToLocal(): Promise<{ pulled: number }> {
+  const db = await getDb();
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) throw new Error('not_authenticated');
+
+  const { data: cloudRows, error } = await supabase
+    .from('prompts')
+    .select('id, title, content, category, tags, is_favorite, created_at, updated_at')
+    .eq('user_id', userId);
+  if (error) throw new Error(error.message);
+
+  let pulled = 0;
+
+  for (const row of (cloudRows ?? []) as CloudPromptRow[]) {
+    const local = await db.getFirstAsync<{ updated_at: number }>(
+      'SELECT updated_at FROM prompts WHERE id = ?',
+      row.id
+    );
+
+    if (!local) {
+      const sql = `INSERT INTO prompts (id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      await db.runAsync(
+        sql,
+        row.id, PERSONAL_VAULT_ID, row.title, row.content, row.category, row.tags,
+        row.is_favorite, row.created_at, row.updated_at, row.updated_at
+      );
+      pulled += 1;
+      continue;
+    }
+
+    if (row.updated_at > local.updated_at) {
+      await db.runAsync(
+        'UPDATE prompts SET title = ?, content = ?, category = ?, tags = ?, is_favorite = ?, updated_at = ?, synced_at = ? WHERE id = ?',
+        row.title, row.content, row.category, row.tags, row.is_favorite, row.updated_at, row.updated_at, row.id
+      );
+      pulled += 1;
+    }
+  }
+
+  return { pulled };
+}
