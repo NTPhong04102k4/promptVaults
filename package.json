@@ -15,6 +15,7 @@
     "expo-glass-effect": "~57.0.3",
     "expo-image": "~57.0.5",
     "expo-linking": "~57.0.10",
+    "expo-local-authentication": "^57.0.3",
     "expo-router": "~57.0.21",
     "expo-secure-store": "^57.0.4",
     "expo-splash-screen": "~57.0.9",
@@ -52,12 +53,6 @@
     "lint": "expo lint",
     "test": "jest",
     "kill-8081": "for /f \"tokens=5\" %a in ('netstat -a -o -n ^| findstr :8081') do taskkill /F /PID %a"
-  },
-  "jest": {
-    "preset": "jest-expo",
-    "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg)"
-    ]
   },
   "private": true
 }

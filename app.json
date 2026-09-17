@@ -34,7 +34,13 @@
           "imageWidth": 76
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Cho phép PromptVault dùng Face ID để mở khoá app."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
