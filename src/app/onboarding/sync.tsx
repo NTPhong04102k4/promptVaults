@@ -6,13 +6,20 @@ import { pushLocalPromptsToCloud, pullCloudPromptsToLocal } from '@/lib/sync';
 export default function SyncScreen() {
   const [status, setStatus] = useState<'idle' | 'syncing' | 'done'>('idle');
   const [result, setResult] = useState<{ synced: number; failed: number; pulled: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleSync() {
+    setError(null);
     setStatus('syncing');
-    const pushResult = await pushLocalPromptsToCloud();
-    const pullResult = await pullCloudPromptsToLocal();
-    setResult({ ...pushResult, pulled: pullResult.pulled });
-    setStatus('done');
+    try {
+      const pushResult = await pushLocalPromptsToCloud();
+      const pullResult = await pullCloudPromptsToLocal();
+      setResult({ ...pushResult, pulled: pullResult.pulled });
+      setStatus('done');
+    } catch {
+      setError('Đồng bộ thất bại, thử lại sau.');
+      setStatus('idle');
+    }
   }
 
   return (
@@ -21,6 +28,8 @@ export default function SyncScreen() {
       <Text style={styles.subtitle}>
         Đồng bộ prompt giữa máy này và tài khoản của bạn — đẩy prompt mới trên máy lên, và tải về prompt đã lưu từ thiết bị khác.
       </Text>
+
+      {error && <Text style={styles.error}>{error}</Text>}
 
       {status === 'done' && result && (
         <Text style={styles.resultText}>
@@ -47,6 +56,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', padding: 24, gap: 16 },
   title: { fontSize: 24, fontWeight: '700', textAlign: 'center' },
   subtitle: { fontSize: 16, textAlign: 'center', color: '#555' },
+  error: { color: '#D14343', textAlign: 'center' },
   resultText: { textAlign: 'center', color: '#208AEF' },
   primaryButton: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
   primaryButtonText: { color: '#fff', fontWeight: '600' },
