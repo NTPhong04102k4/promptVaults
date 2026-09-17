@@ -10,14 +10,14 @@ Give PromptVault an optional onboarding/auth flow so a user can:
 - Opt into Supabase Auth (email/password + Google SSO) when they want cloud sync/backup.
 - After first successful login, push their existing local prompts to Supabase so they aren't lost, and keep future prompts syncing.
 
-This spec covers **onboarding + auth + first sync only**. Group vaults (invite codes), full bidirectional conflict resolution, and Import/Export JSON backup are out of scope — they get their own specs later (Import/Export already has technical notes in `AGENTS.md`).
+This spec covers **onboarding + auth + two-way sync of the personal vault only**: after login, local prompts push to Supabase, and prompts already on the account (from another device) pull down to local — so signing into the same account on a second device sees the same personal vault. Group vaults (invite codes) and Import/Export JSON backup are out of scope — they get their own specs later (Import/Export already has technical notes in `AGENTS.md`).
 
 ## 2. Non-goals
 
 - No mandatory login. Guests must never be blocked from the core loop (save/search/copy).
 - No custom auth backend/API — Supabase Auth is used directly via `@supabase/supabase-js`.
 - No Apple Sign-In in this pass (Google only). Revisit if/when publishing to the App Store.
-- No two-way realtime sync engine. First-login push is a one-time upload; ongoing sync is "local writes flow up when online," not full conflict resolution (matches the personal-vault-is-local-first / group-vault-is-online-only split already decided in AGENTS.md).
+- No realtime sync engine. Sync is triggered manually (button tap), not a background listener — it does one push pass and one pull pass per tap, not continuous two-way replication.
 
 ## 3. Assumptions carried from prior discussion
 
@@ -108,7 +108,10 @@ ALTER TABLE prompts ADD COLUMN synced_at INTEGER;
   - `signInWithEmail({ email, password })` → `supabase.auth.signInWithPassword`.
   - `signInWithGoogle()` → `supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo } })` opened via `expo-web-browser`'s `openAuthSessionAsync`, redirect URI built from `app.json`'s `scheme` (`propmtvaults://`).
   - `getSession()` / `onAuthStateChange()` passthroughs used by the root layout to decide whether to show the "Đã đồng bộ" state.
-- New module `src/lib/sync.ts`: `pushLocalPromptsToCloud()` — reads all local prompts where `synced_at IS NULL OR updated_at > synced_at`, upserts them to `public.prompts` in a batch, then updates local `synced_at`.
+- New module `src/lib/sync.ts`:
+  - `pushLocalPromptsToCloud()` — reads all local prompts where `synced_at IS NULL OR updated_at > synced_at`, upserts them to `public.prompts` in a batch, then updates local `synced_at`.
+  - `pullCloudPromptsToLocal()` — fetches all `public.prompts` rows for the current user, and for each one: if no local row with that `id` exists, insert it; if a local row exists, overwrite it only when the cloud row's `updated_at` is newer (last-write-wins by timestamp, consistent with the `updated_at`-based merge decision in AGENTS.md). Either way, sets local `synced_at = updated_at` so the row isn't immediately re-pushed.
+  - Both are called back-to-back (push, then pull) from a single "Đồng bộ" action — this is what makes two devices on the same account converge, since device A's push becomes visible to device B's next pull.
 
 ## 7. Error handling
 
@@ -126,6 +129,6 @@ ALTER TABLE prompts ADD COLUMN synced_at INTEGER;
 - **Stage 1 — Local groundwork:** add `synced_at` column + migration, add `src/lib/supabase.ts` client setup, add env vars and `@react-native-async-storage/async-storage` dependency. No UI yet; nothing user-visible changes.
 - **Stage 2 — Email/password auth:** Welcome screen, Auth screen (sign up + sign in forms), `src/lib/auth.ts` email methods, session-aware entry point in the existing UI. Google button not wired yet (hidden/disabled).
 - **Stage 3 — Google SSO:** wire `signInWithGoogle()`, OAuth redirect handling, enable the Google button.
-- **Stage 4 — Sync:** `src/lib/sync.ts`, Sync Prompt screen, "Đồng bộ ngay / Để sau" choice after login.
+- **Stage 4 — Sync:** `src/lib/sync.ts` (`pushLocalPromptsToCloud` + `pullCloudPromptsToLocal`), Sync Prompt screen, "Đồng bộ ngay / Để sau" choice after login. "Đồng bộ ngay" runs push then pull so a second device on the same account converges to the same personal vault.
 
 Each stage ships a working, independently testable slice; Stage 1 alone changes nothing user-facing, Stage 2 alone gives working email auth without SSO or sync, etc.

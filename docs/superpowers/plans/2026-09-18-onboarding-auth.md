@@ -15,7 +15,7 @@
 - Guest/local-only flow must never be blocked or gated behind login (spec §2).
 - No custom auth backend — call `@supabase/supabase-js` directly (spec §2, §6).
 - Google SSO only in this plan; no Apple Sign-In (spec §2).
-- Sync is a one-time push per login (local → cloud), not bidirectional/realtime (spec §2).
+- Sync is manual (button tap does one push pass + one pull pass), not a background/realtime engine (spec §2).
 - Use only Expo SDK ~57 APIs: `SQLite.openDatabaseAsync`, `db.execAsync`/`db.runAsync`/`db.getFirstAsync`, `WebBrowser.openAuthSessionAsync(url, redirectUrl)` (verified against https://docs.expo.dev/versions/v57.0.0/).
 - Env vars already present in `.env`: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. **Note:** the current `.env` file is missing a newline between the first two variable lines (`...ElGQhjTsEXPO_PUBLIC_SUPABASE_URL=...` runs together) — Task 1 includes a step to fix this before it's read anywhere.
 - No local prompts CRUD exists yet in this repo. This plan creates the minimal local schema (`vaults`, `prompts`, FTS5) needed to have something to sync — it does not build prompt CRUD UI (save/search/copy screens are a separate, already-noted future spec).
@@ -933,7 +933,7 @@ git commit -m "feat: wire Google sign-in button into auth screen"
 
 **Interfaces:**
 - Consumes: `getDb` (Task 1), `supabase` (Task 2).
-- Produces: `pushLocalPromptsToCloud(): Promise<{ synced: number; failed: number }>`, consumed by the Sync screen (Task 10).
+- Produces: `pushLocalPromptsToCloud(): Promise<{ synced: number; failed: number }>`, consumed by the Sync screen (Task 11).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -941,6 +941,7 @@ git commit -m "feat: wire Google sign-in button into auth screen"
 // src/lib/sync.test.ts
 jest.mock('./db', () => ({
   getDb: jest.fn(),
+  PERSONAL_VAULT_ID: '00000000-0000-4000-8000-000000000001',
 }));
 jest.mock('./supabase', () => ({
   supabase: {
@@ -1070,13 +1071,174 @@ git commit -m "feat: add one-time local-to-cloud prompt sync"
 
 ---
 
-### Task 10: Sync screen
+### Task 10: Pull cloud prompts to local
+
+**Files:**
+- Modify: `src/lib/sync.ts`
+- Test: `src/lib/sync.test.ts`
+
+**Interfaces:**
+- Consumes: `getDb` (Task 1), `supabase` (Task 2).
+- Produces: `pullCloudPromptsToLocal(): Promise<{ pulled: number }>`, added to the exports from Task 9, consumed by the Sync screen (Task 11).
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// append to src/lib/sync.test.ts
+import { PERSONAL_VAULT_ID } from './db';
+import { pullCloudPromptsToLocal } from './sync';
+
+describe('pullCloudPromptsToLocal', () => {
+  it('inserts a cloud row that does not exist locally', async () => {
+    const cloudRows = [
+      { id: 'p1', title: 'T1', content: 'C1', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 5 },
+    ];
+    const getFirstAsync = jest.fn().mockResolvedValue(null);
+    const runAsync = jest.fn();
+    const db = { getFirstAsync, runAsync };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const select = jest.fn().mockResolvedValue({ data: cloudRows, error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ select: jest.fn().mockReturnValue({ eq: select }) });
+
+    const result = await pullCloudPromptsToLocal();
+
+    expect(runAsync).toHaveBeenCalledWith(
+      `INSERT INTO prompts (id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      'p1', PERSONAL_VAULT_ID, 'T1', 'C1', null, null, 0, 1, 5, 5
+    );
+    expect(result).toEqual({ pulled: 1 });
+  });
+
+  it('overwrites a local row only when the cloud row is newer', async () => {
+    const cloudRows = [
+      { id: 'p1', title: 'T1-new', content: 'C1-new', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 10 },
+    ];
+    const getFirstAsync = jest.fn().mockResolvedValue({ updated_at: 3 });
+    const runAsync = jest.fn();
+    const db = { getFirstAsync, runAsync };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const select = jest.fn().mockResolvedValue({ data: cloudRows, error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ select: jest.fn().mockReturnValue({ eq: select }) });
+
+    const result = await pullCloudPromptsToLocal();
+
+    expect(runAsync).toHaveBeenCalledWith(
+      'UPDATE prompts SET title = ?, content = ?, category = ?, tags = ?, is_favorite = ?, updated_at = ?, synced_at = ? WHERE id = ?',
+      'T1-new', 'C1-new', null, null, 0, 10, 10, 'p1'
+    );
+    expect(result).toEqual({ pulled: 1 });
+  });
+
+  it('skips a local row that is already newer than or equal to the cloud row', async () => {
+    const cloudRows = [
+      { id: 'p1', title: 'T1-old', content: 'C1-old', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 3 },
+    ];
+    const getFirstAsync = jest.fn().mockResolvedValue({ updated_at: 5 });
+    const runAsync = jest.fn();
+    const db = { getFirstAsync, runAsync };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const select = jest.fn().mockResolvedValue({ data: cloudRows, error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ select: jest.fn().mockReturnValue({ eq: select }) });
+
+    const result = await pullCloudPromptsToLocal();
+
+    expect(runAsync).not.toHaveBeenCalled();
+    expect(result).toEqual({ pulled: 0 });
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `yarn jest src/lib/sync.test.ts`
+Expected: FAIL — `pullCloudPromptsToLocal is not a function`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// append to src/lib/sync.ts
+import { PERSONAL_VAULT_ID } from './db';
+
+type CloudPromptRow = {
+  id: string;
+  title: string;
+  content: string;
+  category: string | null;
+  tags: string | null;
+  is_favorite: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export async function pullCloudPromptsToLocal(): Promise<{ pulled: number }> {
+  const db = await getDb();
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) throw new Error('not_authenticated');
+
+  const { data: cloudRows, error } = await supabase
+    .from('prompts')
+    .select('id, title, content, category, tags, is_favorite, created_at, updated_at')
+    .eq('user_id', userId);
+  if (error) throw new Error(error.message);
+
+  let pulled = 0;
+
+  for (const row of (cloudRows ?? []) as CloudPromptRow[]) {
+    const local = await db.getFirstAsync<{ updated_at: number }>(
+      'SELECT updated_at FROM prompts WHERE id = ?',
+      row.id
+    );
+
+    if (!local) {
+      await db.runAsync(
+        `INSERT INTO prompts (id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        row.id, PERSONAL_VAULT_ID, row.title, row.content, row.category, row.tags,
+        row.is_favorite, row.created_at, row.updated_at, row.updated_at
+      );
+      pulled += 1;
+      continue;
+    }
+
+    if (row.updated_at > local.updated_at) {
+      await db.runAsync(
+        'UPDATE prompts SET title = ?, content = ?, category = ?, tags = ?, is_favorite = ?, updated_at = ?, synced_at = ? WHERE id = ?',
+        row.title, row.content, row.category, row.tags, row.is_favorite, row.updated_at, row.updated_at, row.id
+      );
+      pulled += 1;
+    }
+  }
+
+  return { pulled };
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `yarn jest src/lib/sync.test.ts`
+Expected: PASS (5 tests total in this file)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/sync.ts src/lib/sync.test.ts
+git commit -m "feat: add cloud-to-local prompt pull for multi-device sync"
+```
+
+---
+
+### Task 11: Sync screen
 
 **Files:**
 - Create: `src/app/onboarding/sync.tsx`
 
 **Interfaces:**
-- Consumes: `pushLocalPromptsToCloud` from `src/lib/sync.ts` (Task 9).
+- Consumes: `pushLocalPromptsToCloud`, `pullCloudPromptsToLocal` from `src/lib/sync.ts` (Tasks 9-10).
 
 - [ ] **Step 1: Implement the screen**
 
@@ -1085,16 +1247,17 @@ git commit -m "feat: add one-time local-to-cloud prompt sync"
 import { useState } from 'react';
 import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
-import { pushLocalPromptsToCloud } from '@/lib/sync';
+import { pushLocalPromptsToCloud, pullCloudPromptsToLocal } from '@/lib/sync';
 
 export default function SyncScreen() {
   const [status, setStatus] = useState<'idle' | 'syncing' | 'done'>('idle');
-  const [result, setResult] = useState<{ synced: number; failed: number } | null>(null);
+  const [result, setResult] = useState<{ synced: number; failed: number; pulled: number } | null>(null);
 
   async function handleSync() {
     setStatus('syncing');
-    const r = await pushLocalPromptsToCloud();
-    setResult(r);
+    const pushResult = await pushLocalPromptsToCloud();
+    const pullResult = await pullCloudPromptsToLocal();
+    setResult({ ...pushResult, pulled: pullResult.pulled });
     setStatus('done');
   }
 
@@ -1102,12 +1265,12 @@ export default function SyncScreen() {
     <View style={styles.container}>
       <Text style={styles.title}>Đồng bộ dữ liệu?</Text>
       <Text style={styles.subtitle}>
-        Đẩy các prompt hiện có trên máy lên tài khoản của bạn để không bị mất khi đổi thiết bị.
+        Đồng bộ prompt giữa máy này và tài khoản của bạn — đẩy prompt mới trên máy lên, và tải về prompt đã lưu từ thiết bị khác.
       </Text>
 
       {status === 'done' && result && (
         <Text style={styles.resultText}>
-          Đã đồng bộ {result.synced} prompt{result.failed > 0 ? `, ${result.failed} lỗi` : ''}.
+          Đã gửi {result.synced} prompt{result.failed > 0 ? `, ${result.failed} lỗi` : ''}, tải về {result.pulled} prompt.
         </Text>
       )}
 
@@ -1137,15 +1300,17 @@ const styles = StyleSheet.create({
 });
 ```
 
-- [ ] **Step 2: Manual verification (full flow, per spec §8)**
+- [ ] **Step 2: Manual verification (full flow, per spec §8), including two-device convergence**
 
 Run: `yarn start`. Confirm: guest flow never sees onboarding screens unless "Đăng nhập để đồng bộ" is tapped; sign-up creates a `profiles` row (check Supabase Table Editor); sign-in with a wrong password shows the inline error; Google SSO round-trips back to `/onboarding/sync`; tapping "Đồng bộ ngay" with local prompts present (insert a test row manually via `db.runAsync` in a debug script if none exist yet) upserts them into Supabase's `prompts` table and sets `synced_at` locally.
+
+Two-device check: sign into the same account from a second simulator/device (or a second local db by clearing app storage after the first sync), tap "Đồng bộ ngay" there, and confirm the prompt created on the first device now appears locally on the second.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add src/app/onboarding/sync.tsx
-git commit -m "feat: add sync screen to complete onboarding flow"
+git commit -m "feat: add sync screen with two-way push/pull for multi-device"
 ```
 
 ---
@@ -1155,6 +1320,6 @@ git commit -m "feat: add sync screen to complete onboarding flow"
 - **Stage 1 (Tasks 0-3):** env fix, local schema, Supabase client, Supabase tables/RLS. No user-visible change.
 - **Stage 2 (Tasks 4-6):** working email/password auth end-to-end, session-aware home screen.
 - **Stage 3 (Tasks 7-8):** Google SSO added to the same Auth screen.
-- **Stage 4 (Tasks 9-10):** first-login sync of local prompts to Supabase.
+- **Stage 4 (Tasks 9-11):** two-way sync (push local → cloud, pull cloud → local) so the same account's personal vault converges across devices.
 
 Each stage's tasks can ship and be demoed independently; later stages only add to what's already working.
