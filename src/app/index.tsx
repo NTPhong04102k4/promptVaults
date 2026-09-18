@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Text, View, StyleSheet, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import type { Session } from '@supabase/supabase-js';
-import { getSession, onAuthStateChange } from '@/lib/auth';
+import { getSession, onAuthStateChange, signOut } from '@/lib/auth';
 
 export default function Index() {
   const [session, setSession] = useState<Session | null>(null);
@@ -21,6 +21,16 @@ export default function Index() {
           {session ? `Đã đồng bộ với ${session.user.email}` : 'Đăng nhập để đồng bộ'}
         </Text>
       </Pressable>
+
+      <Pressable onPress={() => router.push('/settings')} style={styles.accountRow}>
+        <Text style={styles.accountText}>Cài đặt</Text>
+      </Pressable>
+
+      {session && (
+        <Pressable onPress={() => signOut()} style={styles.accountRow}>
+          <Text style={styles.accountText}>Đăng xuất</Text>
+        </Pressable>
+      )}
     </View>
   );
 }

@@ -2,6 +2,7 @@ import type { Session } from '@supabase/supabase-js';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
 import { supabase } from './supabase';
+import { setOAuthInProgress } from './oauthState';
 
 export type SignUpInput = {
   email: string;
@@ -17,20 +18,18 @@ export type SignInInput = {
 };
 
 export async function signUpWithEmail(input: SignUpInput): Promise<void> {
-  const { data, error } = await supabase.auth.signUp({
+  const { error } = await supabase.auth.signUp({
     email: input.email,
     password: input.password,
+    options: {
+      data: {
+        username: input.username,
+        first_name: input.firstName,
+        last_name: input.lastName,
+      },
+    },
   });
-  if (error) throw new Error(error.message);
-  if (!data.user) throw new Error('sign_up_failed');
-
-  const { error: profileError } = await supabase.from('profiles').insert({
-    id: data.user.id,
-    username: input.username,
-    first_name: input.firstName,
-    last_name: input.lastName,
-  });
-  if (profileError) throw new Error(profileError.message);
+  if (error) throw new Error(error.code ?? error.message);
 }
 
 export async function signInWithEmail(input: SignInInput): Promise<void> {
@@ -38,7 +37,7 @@ export async function signInWithEmail(input: SignInInput): Promise<void> {
     email: input.email,
     password: input.password,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw new Error(error.code ?? error.message);
 }
 
 export async function getSession(): Promise<Session | null> {
@@ -52,26 +51,35 @@ export function onAuthStateChange(cb: (session: Session | null) => void): () => 
 }
 
 export async function signInWithGoogle(): Promise<void> {
-  const redirectTo = Linking.createURL('onboarding/sync');
+  setOAuthInProgress(true);
+  try {
+    const redirectTo = Linking.createURL('onboarding/sync');
 
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: { redirectTo, skipBrowserRedirect: true },
-  });
-  if (error) throw new Error(error.message);
-  if (!data.url) throw new Error('missing_oauth_url');
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo, skipBrowserRedirect: true },
+    });
+    if (error) throw new Error(error.message);
+    if (!data.url) throw new Error('missing_oauth_url');
 
-  const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-  if (result.type !== 'success') return;
+    const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+    if (result.type !== 'success') return;
 
-  const params = new URLSearchParams(result.url.split('#')[1] ?? '');
-  const accessToken = params.get('access_token');
-  const refreshToken = params.get('refresh_token');
-  if (!accessToken || !refreshToken) throw new Error('missing_tokens');
+    const params = new URLSearchParams(result.url.split('#')[1] ?? '');
+    const accessToken = params.get('access_token');
+    const refreshToken = params.get('refresh_token');
+    if (!accessToken || !refreshToken) throw new Error('missing_tokens');
 
-  const { error: sessionError } = await supabase.auth.setSession({
-    access_token: accessToken,
-    refresh_token: refreshToken,
-  });
-  if (sessionError) throw new Error(sessionError.message);
+    const { error: sessionError } = await supabase.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+    });
+    if (sessionError) throw new Error(sessionError.message);
+  } finally {
+    setOAuthInProgress(false);
+  }
+}
+
+export async function signOut(): Promise<void> {
+  await supabase.auth.signOut();
 }

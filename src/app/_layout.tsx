@@ -3,6 +3,7 @@ import { AppState, AppStateStatus, View, Text, Pressable, StyleSheet } from 'rea
 import { Stack } from 'expo-router';
 import { isAppLockEnabled } from '@/lib/appLock';
 import { authenticateWithBiometric } from '@/lib/biometric';
+import { isOAuthInProgress } from '@/lib/oauthState';
 
 export default function RootLayout() {
   const [checked, setChecked] = useState(false);
@@ -18,7 +19,7 @@ export default function RootLayout() {
   useEffect(() => {
     checkLock();
     const subscription = AppState.addEventListener('change', (next) => {
-      if (appState.current.match(/inactive|background/) && next === 'active') {
+      if (appState.current.match(/inactive|background/) && next === 'active' && !isOAuthInProgress()) {
         checkLock();
       }
       appState.current = next;
