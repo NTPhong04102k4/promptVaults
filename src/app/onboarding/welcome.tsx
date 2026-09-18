@@ -13,7 +13,7 @@ export default function WelcomeScreen() {
         <Text style={styles.primaryButtonText}>Đăng ký / Đăng nhập để đồng bộ</Text>
       </Pressable>
 
-      <Pressable onPress={() => router.back()}>
+      <Pressable onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}>
         <Text style={styles.secondaryText}>Dùng ngay, không cần tài khoản</Text>
       </Pressable>
     </View>
