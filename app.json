@@ -18,7 +18,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.x12333kkkdsaf.PropmtVaults"
+      "package": "com.ntp.PropmtVaults"
     },
     "web": {
       "output": "static",
@@ -52,6 +52,6 @@
         "projectId": "ccbec8e0-eefe-4684-aee8-104a25af4a96"
       }
     },
-    "owner": "12333kkkdsaf"
+    "owner": "ntp"
   }
 }
