@@ -1,0 +1,1931 @@
+# Onboarding + Supabase Auth Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add an optional onboarding/auth flow (email+password and Google SSO via Supabase Auth) that, after login, pushes the user's local prompts to Supabase for backup, without ever blocking the guest/local-only path.
+
+**Architecture:** A local-first Expo Router app (SQLite via `expo-sqlite`) gains a thin Supabase layer (`src/lib/supabase.ts`, `src/lib/auth.ts`, `src/lib/sync.ts`) and three new screens (Welcome, Auth, Sync). The existing local-only home screen is untouched as the default entry point; auth is reached only through an explicit "Đăng nhập để đồng bộ" action.
+
+**Tech Stack:** Expo SDK ~57 (`expo-sqlite` async API, `expo-router`, `expo-web-browser`, `expo-secure-store`, `expo-local-authentication`, `expo-crypto`), `@supabase/supabase-js`, `@react-native-async-storage/async-storage`, `aes-js` (new dependencies, installed across Tasks 0, 12, and 14).
+
+**Spec:** `docs/superpowers/specs/2026-09-18-onboarding-auth-design.md`
+
+## Global Constraints
+
+- Guest/local-only flow must never be blocked or gated behind login (spec §2).
+- No custom auth backend — call `@supabase/supabase-js` directly (spec §2, §6).
+- Google SSO only in this plan; no Apple Sign-In (spec §2).
+- Sync is manual (button tap does one push pass + one pull pass), not a background/realtime engine (spec §2).
+- Use only Expo SDK ~57 APIs: `SQLite.openDatabaseAsync`, `db.execAsync`/`db.runAsync`/`db.getFirstAsync`, `WebBrowser.openAuthSessionAsync(url, redirectUrl)` (verified against https://docs.expo.dev/versions/v57.0.0/).
+- Env vars already present in `.env`: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. **Note:** the current `.env` file is missing a newline between the first two variable lines (`...ElGQhjTsEXPO_PUBLIC_SUPABASE_URL=...` runs together) — Task 1 includes a step to fix this before it's read anywhere.
+- Supabase session storage is encrypted at rest (AES via `aes-js`, key held in `expo-secure-store`) — never revert to storing the raw session in plain `AsyncStorage` (spec §9).
+- Biometric app lock is opt-in and defaults OFF; it must never block the guest/local-only flow for a user who hasn't enabled it (spec §9, and the Global Constraint above about guests never being gated).
+- `.env` is intentionally excluded by `.gitignore` (`.env*` pattern) and must never be `git add`ed or force-added — it holds real Supabase project credentials. Fix its formatting in place (Task 0) without staging or committing it.
+- No local prompts CRUD exists yet in this repo. This plan creates the minimal local schema (`vaults`, `prompts`, FTS5) needed to have something to sync — it does not build prompt CRUD UI (save/search/copy screens are a separate, already-noted future spec).
+
+---
+
+### Task 0: Fix `.env` formatting, install AsyncStorage, set up Jest
+
+**Files:**
+- Modify: `.env`
+- Modify: `package.json`
+- Modify: `tsconfig.json`
+
+**Interfaces:**
+- Produces: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` as two cleanly separated lines, readable by `expo-constants`/`process.env` at build time.
+- Produces: a working `yarn jest <path>` command — no test infrastructure exists in this repo yet, and every later task's test steps depend on it.
+
+- [ ] **Step 1: Fix the `.env` file**
+
+Open `.env` and make sure it reads as exactly two lines (keep the real values already in the file, just separate them):
+
+```
+EXPO_PUBLIC_SUPABASE_URL=<existing url value>
+EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<existing publishable key value>
+```
+
+Remove the stray duplicate `EXPO_PUBLIC_SUPABASE_URL=` fragment that's currently concatenated onto the key value.
+
+- [ ] **Step 2: Install AsyncStorage**
+
+Run: `yarn add @react-native-async-storage/async-storage`
+
+- [ ] **Step 3: Verify install**
+
+Run: `yarn why @react-native-async-storage/async-storage`
+Expected: prints the resolved version, no error.
+
+- [ ] **Step 4: Install Jest**
+
+Run: `npx expo install jest-expo jest @types/jest --dev` (this resolves SDK-~57-compatible versions automatically; it detects and uses `yarn` since `yarn.lock` is present).
+
+- [ ] **Step 5: Configure Jest**
+
+Add to `package.json` (alongside the existing top-level keys, e.g. after `"scripts"`):
+
+```json
+"jest": {
+  "preset": "jest-expo",
+  "transformIgnorePatterns": [
+    "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg)"
+  ]
+}
+```
+
+Add `"test": "jest"` to the existing `"scripts"` block.
+
+Add to `tsconfig.json`'s `compilerOptions` (alongside the existing `"strict"` and `"paths"` keys): `"types": ["jest"]`.
+
+- [ ] **Step 6: Verify Jest runs**
+
+Run: `yarn jest --listTests`
+Expected: exits 0 and prints "No tests found" (or an empty list) — confirms the preset and config resolve correctly with zero test files present yet.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add package.json yarn.lock tsconfig.json
+git commit -m "chore: fix env formatting, add AsyncStorage, set up Jest"
+```
+
+---
+
+### Task 1: Local SQLite schema (`vaults`, `prompts`, FTS5)
+
+**Files:**
+- Create: `src/lib/db.ts`
+- Test: `src/lib/db.test.ts`
+
+**Interfaces:**
+- Produces: `getDb(): Promise<SQLite.SQLiteDatabase>` — opens (once, memoized) and migrates `promptvaults.db`.
+- Produces: `PERSONAL_VAULT_ID: string` — a fixed UUID constant used as the default local vault's id (no UI to create vaults yet, so one implicit personal vault always exists).
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// src/lib/db.test.ts
+import { getDb, PERSONAL_VAULT_ID } from './db';
+
+describe('getDb', () => {
+  it('creates the vaults and prompts tables and seeds the personal vault', async () => {
+    const db = await getDb();
+    const vault = await db.getFirstAsync<{ id: string; type: string }>(
+      'SELECT id, type FROM vaults WHERE id = ?',
+      PERSONAL_VAULT_ID
+    );
+    expect(vault?.type).toBe('personal');
+
+    const cols = await db.getAllAsync<{ name: string }>("PRAGMA table_info('prompts')");
+    const colNames = cols.map((c) => c.name);
+    expect(colNames).toEqual(
+      expect.arrayContaining([
+        'id', 'vault_id', 'title', 'content', 'category', 'tags',
+        'is_favorite', 'created_at', 'updated_at', 'synced_at',
+      ])
+    );
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `yarn jest src/lib/db.test.ts`
+Expected: FAIL — `Cannot find module './db'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// src/lib/db.ts
+import * as SQLite from 'expo-sqlite';
+
+export const PERSONAL_VAULT_ID = '00000000-0000-4000-8000-000000000001';
+
+const DATABASE_VERSION = 1;
+
+let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+
+export function getDb(): Promise<SQLite.SQLiteDatabase> {
+  if (!dbPromise) {
+    dbPromise = SQLite.openDatabaseAsync('promptvaults.db').then(async (db) => {
+      await migrate(db);
+      return db;
+    });
+  }
+  return dbPromise;
+}
+
+async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  const currentVersion = row?.user_version ?? 0;
+  if (currentVersion >= DATABASE_VERSION) return;
+
+  await db.execAsync(`
+    PRAGMA journal_mode = WAL;
+
+    CREATE TABLE IF NOT EXISTS vaults (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('personal','group')),
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS prompts (
+      id TEXT PRIMARY KEY,
+      vault_id TEXT NOT NULL REFERENCES vaults(id),
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      category TEXT,
+      tags TEXT,
+      is_favorite INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      synced_at INTEGER
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS prompts_fts USING fts5(
+      title, content, category, tags,
+      content='prompts', content_rowid='rowid'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS prompts_ai AFTER INSERT ON prompts BEGIN
+      INSERT INTO prompts_fts(rowid, title, content, category, tags)
+      VALUES (new.rowid, new.title, new.content, new.category, new.tags);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS prompts_ad AFTER DELETE ON prompts BEGIN
+      INSERT INTO prompts_fts(prompts_fts, rowid, title, content, category, tags)
+      VALUES ('delete', old.rowid, old.title, old.content, old.category, old.tags);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS prompts_au AFTER UPDATE ON prompts BEGIN
+      INSERT INTO prompts_fts(prompts_fts, rowid, title, content, category, tags)
+      VALUES ('delete', old.rowid, old.title, old.content, old.category, old.tags);
+      INSERT INTO prompts_fts(rowid, title, content, category, tags)
+      VALUES (new.rowid, new.title, new.content, new.category, new.tags);
+    END;
+  `);
+
+  await db.runAsync(
+    'INSERT OR IGNORE INTO vaults (id, name, type, created_at) VALUES (?, ?, ?, ?)',
+    PERSONAL_VAULT_ID,
+    'Kho cá nhân',
+    'personal',
+    Date.now()
+  );
+
+  await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `yarn jest src/lib/db.test.ts`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/db.ts src/lib/db.test.ts
+git commit -m "feat: add local SQLite schema for vaults and prompts"
+```
+
+---
+
+### Task 2: Supabase client module
+
+**Files:**
+- Create: `src/lib/supabase.ts`
+- Test: `src/lib/supabase.test.ts`
+
+**Interfaces:**
+- Consumes: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` from `process.env` (Task 0).
+- Produces: `supabase: SupabaseClient` — the shared client used by every other `src/lib/*` module in this plan.
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// src/lib/supabase.test.ts
+import { supabase } from './supabase';
+
+describe('supabase client', () => {
+  it('is configured with auth persistence enabled', () => {
+    expect(supabase).toBeDefined();
+    expect(supabase.auth).toBeDefined();
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `yarn jest src/lib/supabase.test.ts`
+Expected: FAIL — `Cannot find module './supabase'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// src/lib/supabase.ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    storage: AsyncStorage,
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
+  },
+});
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `yarn jest src/lib/supabase.test.ts`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/supabase.ts src/lib/supabase.test.ts
+git commit -m "feat: add Supabase client with AsyncStorage session persistence"
+```
+
+---
+
+### Task 3: Supabase-side tables and RLS (manual SQL, not app code)
+
+**Files:**
+- Create: `supabase/migrations/20260918000000_profiles_and_prompts.sql`
+
+**Interfaces:**
+- Produces: `public.profiles` and `public.prompts` tables with RLS, consumed by Task 4 (`profiles` insert) and Task 9 (`prompts` upsert).
+
+- [ ] **Step 1: Write the migration file**
+
+```sql
+-- supabase/migrations/20260918000000_profiles_and_prompts.sql
+create table public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  username text unique not null,
+  first_name text not null,
+  last_name text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.profiles enable row level security;
+
+create policy "profiles_select_own" on public.profiles
+  for select using (auth.uid() = id);
+create policy "profiles_insert_own" on public.profiles
+  for insert with check (auth.uid() = id);
+create policy "profiles_update_own" on public.profiles
+  for update using (auth.uid() = id);
+
+create table public.prompts (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  title text not null,
+  content text not null,
+  category text,
+  tags text,
+  is_favorite integer not null default 0,
+  created_at bigint not null,
+  updated_at bigint not null
+);
+
+alter table public.prompts enable row level security;
+
+create policy "prompts_all_own" on public.prompts
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+```
+
+- [ ] **Step 2: Apply the migration**
+
+Run: `npx supabase db push` (requires the project to already be linked with `npx supabase link`; if not yet linked, run the SQL directly in the Supabase dashboard's SQL editor instead).
+Expected: `profiles` and `prompts` tables exist in the Supabase project, visible under Table Editor.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add supabase/migrations/20260918000000_profiles_and_prompts.sql
+git commit -m "feat: add Supabase profiles and prompts tables with RLS"
+```
+
+---
+
+### Task 4: Email/password auth functions
+
+**Files:**
+- Create: `src/lib/auth.ts`
+- Test: `src/lib/auth.test.ts`
+
+**Interfaces:**
+- Consumes: `supabase` from `src/lib/supabase.ts` (Task 2).
+- Produces: `signUpWithEmail(input: SignUpInput): Promise<void>`, `signInWithEmail(input: SignInInput): Promise<void>`, `getSession(): Promise<Session | null>`, `onAuthStateChange(cb: (session: Session | null) => void): () => void` — all consumed by the Auth screen (Task 5) and root layout (Task 6).
+- Types: `SignUpInput = { email: string; password: string; firstName: string; lastName: string; username: string }`, `SignInInput = { email: string; password: string }`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```typescript
+// src/lib/auth.test.ts
+jest.mock('./supabase', () => ({
+  supabase: {
+    auth: {
+      signUp: jest.fn(),
+      signInWithPassword: jest.fn(),
+      getSession: jest.fn(),
+      onAuthStateChange: jest.fn(),
+    },
+    from: jest.fn(),
+  },
+}));
+
+import { supabase } from './supabase';
+import { signUpWithEmail, signInWithEmail } from './auth';
+
+describe('signUpWithEmail', () => {
+  it('signs up then inserts a profile row for the new user', async () => {
+    (supabase.auth.signUp as jest.Mock).mockResolvedValue({
+      data: { user: { id: 'user-1' } },
+      error: null,
+    });
+    const insert = jest.fn().mockResolvedValue({ error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ insert });
+
+    await signUpWithEmail({
+      email: 'a@b.com',
+      password: 'secret123',
+      firstName: 'An',
+      lastName: 'Nguyen',
+      username: 'annguyen',
+    });
+
+    expect(supabase.auth.signUp).toHaveBeenCalledWith({
+      email: 'a@b.com',
+      password: 'secret123',
+    });
+    expect(supabase.from).toHaveBeenCalledWith('profiles');
+    expect(insert).toHaveBeenCalledWith({
+      id: 'user-1',
+      username: 'annguyen',
+      first_name: 'An',
+      last_name: 'Nguyen',
+    });
+  });
+
+  it('throws when sign up fails', async () => {
+    (supabase.auth.signUp as jest.Mock).mockResolvedValue({
+      data: { user: null },
+      error: { message: 'user_already_exists' },
+    });
+
+    await expect(
+      signUpWithEmail({
+        email: 'a@b.com',
+        password: 'secret123',
+        firstName: 'An',
+        lastName: 'Nguyen',
+        username: 'annguyen',
+      })
+    ).rejects.toThrow('user_already_exists');
+  });
+});
+
+describe('signInWithEmail', () => {
+  it('calls supabase signInWithPassword', async () => {
+    (supabase.auth.signInWithPassword as jest.Mock).mockResolvedValue({ error: null });
+
+    await signInWithEmail({ email: 'a@b.com', password: 'secret123' });
+
+    expect(supabase.auth.signInWithPassword).toHaveBeenCalledWith({
+      email: 'a@b.com',
+      password: 'secret123',
+    });
+  });
+
+  it('throws on invalid credentials', async () => {
+    (supabase.auth.signInWithPassword as jest.Mock).mockResolvedValue({
+      error: { message: 'invalid_credentials' },
+    });
+
+    await expect(signInWithEmail({ email: 'a@b.com', password: 'wrong' })).rejects.toThrow(
+      'invalid_credentials'
+    );
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `yarn jest src/lib/auth.test.ts`
+Expected: FAIL — `Cannot find module './auth'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// src/lib/auth.ts
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from './supabase';
+
+export type SignUpInput = {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+};
+
+export type SignInInput = {
+  email: string;
+  password: string;
+};
+
+export async function signUpWithEmail(input: SignUpInput): Promise<void> {
+  const { data, error } = await supabase.auth.signUp({
+    email: input.email,
+    password: input.password,
+  });
+  if (error) throw new Error(error.message);
+  if (!data.user) throw new Error('sign_up_failed');
+
+  const { error: profileError } = await supabase.from('profiles').insert({
+    id: data.user.id,
+    username: input.username,
+    first_name: input.firstName,
+    last_name: input.lastName,
+  });
+  if (profileError) throw new Error(profileError.message);
+}
+
+export async function signInWithEmail(input: SignInInput): Promise<void> {
+  const { error } = await supabase.auth.signInWithPassword({
+    email: input.email,
+    password: input.password,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function getSession(): Promise<Session | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session;
+}
+
+export function onAuthStateChange(cb: (session: Session | null) => void): () => void {
+  const { data } = supabase.auth.onAuthStateChange((_event, session) => cb(session));
+  return () => data.subscription.unsubscribe();
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `yarn jest src/lib/auth.test.ts`
+Expected: PASS (4 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/auth.ts src/lib/auth.test.ts
+git commit -m "feat: add email/password sign up and sign in"
+```
+
+---
+
+### Task 5: Auth screen (email/password forms)
+
+**Files:**
+- Create: `src/app/onboarding/auth.tsx`
+- Test: manual (see Task 5 Step 4) — component tests are out of scope for this plan; RN component testing setup isn't present in the repo yet, so this task's screens are verified manually per the spec's §8 test plan.
+
+**Interfaces:**
+- Consumes: `signUpWithEmail`, `signInWithEmail` from `src/lib/auth.ts` (Task 4).
+- Produces: route `/onboarding/auth`, navigated to from the Welcome screen (Task 6) with an optional `?mode=signup|signin` param.
+
+- [ ] **Step 1: Implement the screen**
+
+```typescript
+// src/app/onboarding/auth.tsx
+import { useState } from 'react';
+import { View, TextInput, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { router, useLocalSearchParams } from 'expo-router';
+import { signInWithEmail, signUpWithEmail } from '@/lib/auth';
+
+const ERROR_MESSAGES: Record<string, string> = {
+  user_already_exists: 'Email này đã được đăng ký.',
+  invalid_credentials: 'Email hoặc mật khẩu không đúng.',
+};
+
+function friendlyError(message: string): string {
+  if (message.includes('duplicate key') && message.includes('username')) {
+    return 'Username đã được sử dụng.';
+  }
+  return ERROR_MESSAGES[message] ?? 'Có lỗi xảy ra, thử lại sau.';
+}
+
+export default function AuthScreen() {
+  const { mode: initialMode } = useLocalSearchParams<{ mode?: string }>();
+  const [mode, setMode] = useState<'signup' | 'signin'>(
+    initialMode === 'signup' ? 'signup' : 'signin'
+  );
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [username, setUsername] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit() {
+    setError(null);
+    setLoading(true);
+    try {
+      if (mode === 'signup') {
+        await signUpWithEmail({ email, password, firstName, lastName, username });
+      } else {
+        await signInWithEmail({ email, password });
+      }
+      router.replace('/onboarding/sync');
+    } catch (e) {
+      setError(friendlyError(e instanceof Error ? e.message : String(e)));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>{mode === 'signup' ? 'Đăng ký' : 'Đăng nhập'}</Text>
+
+      {mode === 'signup' && (
+        <>
+          <TextInput
+            style={styles.input}
+            placeholder="Username"
+            autoCapitalize="none"
+            value={username}
+            onChangeText={setUsername}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Tên"
+            value={firstName}
+            onChangeText={setFirstName}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Họ"
+            value={lastName}
+            onChangeText={setLastName}
+          />
+        </>
+      )}
+
+      <TextInput
+        style={styles.input}
+        placeholder="Email"
+        autoCapitalize="none"
+        keyboardType="email-address"
+        value={email}
+        onChangeText={setEmail}
+      />
+      <TextInput
+        style={styles.input}
+        placeholder="Mật khẩu"
+        secureTextEntry
+        value={password}
+        onChangeText={setPassword}
+      />
+
+      {error && <Text style={styles.error}>{error}</Text>}
+
+      <Pressable style={styles.button} onPress={handleSubmit} disabled={loading}>
+        {loading ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.buttonText}>{mode === 'signup' ? 'Đăng ký' : 'Đăng nhập'}</Text>
+        )}
+      </Pressable>
+
+      <Pressable onPress={() => setMode(mode === 'signup' ? 'signin' : 'signup')}>
+        <Text style={styles.switchText}>
+          {mode === 'signup' ? 'Đã có tài khoản? Đăng nhập' : 'Chưa có tài khoản? Đăng ký'}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
+  title: { fontSize: 24, fontWeight: '600', marginBottom: 12 },
+  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
+  button: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
+  buttonText: { color: '#fff', fontWeight: '600' },
+  error: { color: '#D14343' },
+  switchText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
+});
+```
+
+- [ ] **Step 2: Start the dev server and navigate manually**
+
+Run: `yarn start`, open the app, navigate to `/onboarding/auth` (temporarily, e.g. by typing the path in Expo Router's dev menu or a temporary link on the home screen from Task 6).
+Expected: form renders; submitting with an existing email shows "Email này đã được đăng ký." if in sign-up mode; submitting valid new credentials navigates to `/onboarding/sync` (route created in Task 10 — until then, expect a "Unmatched Route" screen, which confirms navigation fired correctly).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/app/onboarding/auth.tsx
+git commit -m "feat: add email/password auth screen"
+```
+
+---
+
+### Task 6: Welcome screen + entry point wiring
+
+**Files:**
+- Create: `src/app/onboarding/welcome.tsx`
+- Modify: `src/app/index.tsx`
+
+**Interfaces:**
+- Consumes: `getSession`, `onAuthStateChange` from `src/lib/auth.ts` (Task 4).
+- Produces: route `/onboarding/welcome`; modifies the home screen to show either "Đăng nhập để đồng bộ" (no session) or "Đã đồng bộ với <email>" (session present).
+
+- [ ] **Step 1: Implement the Welcome screen**
+
+```typescript
+// src/app/onboarding/welcome.tsx
+import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { router } from 'expo-router';
+
+export default function WelcomeScreen() {
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>PromptVault</Text>
+      <Text style={styles.subtitle}>
+        Lưu trữ gọn gàng – Tìm kiếm thần tốc – Copy 1 chạm cho content creator.
+      </Text>
+
+      <Pressable style={styles.primaryButton} onPress={() => router.push('/onboarding/auth?mode=signup')}>
+        <Text style={styles.primaryButtonText}>Đăng ký / Đăng nhập để đồng bộ</Text>
+      </Pressable>
+
+      <Pressable onPress={() => router.back()}>
+        <Text style={styles.secondaryText}>Dùng ngay, không cần tài khoản</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 16 },
+  title: { fontSize: 32, fontWeight: '700', textAlign: 'center' },
+  subtitle: { fontSize: 16, textAlign: 'center', color: '#555' },
+  primaryButton: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
+  primaryButtonText: { color: '#fff', fontWeight: '600' },
+  secondaryText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
+});
+```
+
+- [ ] **Step 2: Wire the entry point in the home screen**
+
+```typescript
+// src/app/index.tsx
+import { useEffect, useState } from 'react';
+import { Text, View, StyleSheet, Pressable } from 'react-native';
+import { router } from 'expo-router';
+import type { Session } from '@supabase/supabase-js';
+import { getSession, onAuthStateChange } from '@/lib/auth';
+
+export default function Index() {
+  const [session, setSession] = useState<Session | null>(null);
+
+  useEffect(() => {
+    getSession().then(setSession);
+    return onAuthStateChange(setSession);
+  }, []);
+
+  return (
+    <View style={styles.container}>
+      <Text>Edit src/app/index.tsx to edit this screen.</Text>
+
+      <Pressable onPress={() => router.push('/onboarding/welcome')} style={styles.accountRow}>
+        <Text style={styles.accountText}>
+          {session ? `Đã đồng bộ với ${session.user.email}` : 'Đăng nhập để đồng bộ'}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  accountRow: { padding: 12 },
+  accountText: { color: '#208AEF' },
+});
+```
+
+- [ ] **Step 3: Manual verification**
+
+Run: `yarn start`, confirm the home screen loads with no session and shows "Đăng nhập để đồng bộ"; tapping it opens Welcome; "Dùng ngay" returns to home with no navigation errors.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/app/onboarding/welcome.tsx src/app/index.tsx
+git commit -m "feat: add welcome screen and session-aware home entry point"
+```
+
+---
+
+### Task 7: Google SSO
+
+**Files:**
+- Modify: `src/lib/auth.ts`
+- Test: `src/lib/auth.test.ts`
+
+**Interfaces:**
+- Consumes: `supabase` (Task 2), `WebBrowser.openAuthSessionAsync` (`expo-web-browser`, already a dependency).
+- Produces: `signInWithGoogle(): Promise<void>`, added to the exports from Task 4.
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// append to src/lib/auth.test.ts
+jest.mock('expo-web-browser', () => ({
+  openAuthSessionAsync: jest.fn(),
+}));
+jest.mock('expo-linking', () => ({
+  createURL: jest.fn(() => 'promptvaults://onboarding/sync'),
+}));
+
+import * as WebBrowser from 'expo-web-browser';
+import { signInWithGoogle } from './auth';
+
+describe('signInWithGoogle', () => {
+  it('opens the OAuth URL from supabase and sets the session on success', async () => {
+    (supabase.auth.signInWithOAuth as jest.Mock) = jest.fn().mockResolvedValue({
+      data: { url: 'https://supabase.example/oauth/google' },
+      error: null,
+    });
+    (WebBrowser.openAuthSessionAsync as jest.Mock).mockResolvedValue({
+      type: 'success',
+      url: 'promptvaults://onboarding/sync#access_token=abc&refresh_token=def',
+    });
+    (supabase.auth as any).setSession = jest.fn().mockResolvedValue({ error: null });
+
+    await signInWithGoogle();
+
+    expect(supabase.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: 'google',
+      options: { redirectTo: 'promptvaults://onboarding/sync', skipBrowserRedirect: true },
+    });
+    expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledWith(
+      'https://supabase.example/oauth/google',
+      'promptvaults://onboarding/sync'
+    );
+    expect(supabase.auth.setSession).toHaveBeenCalledWith({
+      access_token: 'abc',
+      refresh_token: 'def',
+    });
+  });
+
+  it('does nothing when the user cancels', async () => {
+    (supabase.auth.signInWithOAuth as jest.Mock) = jest.fn().mockResolvedValue({
+      data: { url: 'https://supabase.example/oauth/google' },
+      error: null,
+    });
+    (WebBrowser.openAuthSessionAsync as jest.Mock).mockResolvedValue({ type: 'cancel' });
+    (supabase.auth as any).setSession = jest.fn();
+
+    await signInWithGoogle();
+
+    expect(supabase.auth.setSession).not.toHaveBeenCalled();
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `yarn jest src/lib/auth.test.ts`
+Expected: FAIL — `signInWithGoogle is not a function`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// append to src/lib/auth.ts
+import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
+
+export async function signInWithGoogle(): Promise<void> {
+  const redirectTo = Linking.createURL('onboarding/sync');
+
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo, skipBrowserRedirect: true },
+  });
+  if (error) throw new Error(error.message);
+  if (!data.url) throw new Error('missing_oauth_url');
+
+  const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+  if (result.type !== 'success') return;
+
+  const params = new URLSearchParams(result.url.split('#')[1] ?? '');
+  const accessToken = params.get('access_token');
+  const refreshToken = params.get('refresh_token');
+  if (!accessToken || !refreshToken) throw new Error('missing_tokens');
+
+  const { error: sessionError } = await supabase.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+  if (sessionError) throw new Error(sessionError.message);
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `yarn jest src/lib/auth.test.ts`
+Expected: PASS (6 tests total)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/auth.ts src/lib/auth.test.ts
+git commit -m "feat: add Google SSO via Supabase OAuth"
+```
+
+---
+
+### Task 8: Wire the Google button into the Auth screen
+
+**Files:**
+- Modify: `src/app/onboarding/auth.tsx`
+
+**Interfaces:**
+- Consumes: `signInWithGoogle` from `src/lib/auth.ts` (Task 7).
+
+- [ ] **Step 1: Add the button and handler**
+
+```typescript
+// src/app/onboarding/auth.tsx — add alongside the existing imports
+import { signInWithGoogle } from '@/lib/auth';
+
+// inside AuthScreen, add a new handler next to handleSubmit
+async function handleGoogleSignIn() {
+  setError(null);
+  setLoading(true);
+  try {
+    await signInWithGoogle();
+    router.replace('/onboarding/sync');
+  } catch (e) {
+    setError(friendlyError(e instanceof Error ? e.message : String(e)));
+  } finally {
+    setLoading(false);
+  }
+}
+
+// in the JSX, after the mode-switch Pressable:
+<Pressable style={styles.googleButton} onPress={handleGoogleSignIn} disabled={loading}>
+  <Text style={styles.googleButtonText}>Tiếp tục với Google</Text>
+</Pressable>
+```
+
+```typescript
+// add to the styles object
+googleButton: { borderWidth: 1, borderColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 8 },
+googleButtonText: { color: '#208AEF', fontWeight: '600' },
+```
+
+- [ ] **Step 2: Manual verification**
+
+Run: `yarn start`, tap "Tiếp tục với Google" on the Auth screen, confirm the system browser opens Google's consent screen and returns to the app on completion (or shows no error dialog on cancel).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/app/onboarding/auth.tsx
+git commit -m "feat: wire Google sign-in button into auth screen"
+```
+
+---
+
+### Task 9: Push local prompts to Supabase
+
+**Files:**
+- Create: `src/lib/sync.ts`
+- Test: `src/lib/sync.test.ts`
+
+**Interfaces:**
+- Consumes: `getDb` (Task 1), `supabase` (Task 2).
+- Produces: `pushLocalPromptsToCloud(): Promise<{ synced: number; failed: number }>`, consumed by the Sync screen (Task 11).
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// src/lib/sync.test.ts
+jest.mock('./db', () => ({
+  getDb: jest.fn(),
+  PERSONAL_VAULT_ID: '00000000-0000-4000-8000-000000000001',
+}));
+jest.mock('./supabase', () => ({
+  supabase: {
+    auth: { getUser: jest.fn() },
+    from: jest.fn(),
+  },
+}));
+
+import { getDb } from './db';
+import { supabase } from './supabase';
+import { pushLocalPromptsToCloud } from './sync';
+
+describe('pushLocalPromptsToCloud', () => {
+  it('upserts unsynced rows and marks them synced', async () => {
+    const rows = [
+      { id: 'p1', vault_id: 'v1', title: 'T1', content: 'C1', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 2 },
+    ];
+    const runAsync = jest.fn();
+    const db = { getAllAsync: jest.fn().mockResolvedValue(rows), runAsync };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const upsert = jest.fn().mockResolvedValue({ error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ upsert });
+
+    const result = await pushLocalPromptsToCloud();
+
+    expect(upsert).toHaveBeenCalledWith([
+      { id: 'p1', user_id: 'user-1', title: 'T1', content: 'C1', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 2 },
+    ]);
+    expect(runAsync).toHaveBeenCalledWith('UPDATE prompts SET synced_at = ? WHERE id = ?', expect.any(Number), 'p1');
+    expect(result).toEqual({ synced: 1, failed: 0 });
+  });
+
+  it('counts a failed upsert without throwing', async () => {
+    const rows = [
+      { id: 'p1', vault_id: 'v1', title: 'T1', content: 'C1', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 2 },
+    ];
+    const db = { getAllAsync: jest.fn().mockResolvedValue(rows), runAsync: jest.fn() };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const upsert = jest.fn().mockResolvedValue({ error: { message: 'network error' } });
+    (supabase.from as jest.Mock).mockReturnValue({ upsert });
+
+    const result = await pushLocalPromptsToCloud();
+
+    expect(result).toEqual({ synced: 0, failed: 1 });
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `yarn jest src/lib/sync.test.ts`
+Expected: FAIL — `Cannot find module './sync'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// src/lib/sync.ts
+import { getDb } from './db';
+import { supabase } from './supabase';
+
+type LocalPromptRow = {
+  id: string;
+  vault_id: string;
+  title: string;
+  content: string;
+  category: string | null;
+  tags: string | null;
+  is_favorite: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export async function pushLocalPromptsToCloud(): Promise<{ synced: number; failed: number }> {
+  const db = await getDb();
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) throw new Error('not_authenticated');
+
+  const rows = await db.getAllAsync<LocalPromptRow>(
+    'SELECT id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at FROM prompts WHERE synced_at IS NULL OR updated_at > synced_at'
+  );
+
+  let synced = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    const { error } = await supabase.from('prompts').upsert([
+      {
+        id: row.id,
+        user_id: userId,
+        title: row.title,
+        content: row.content,
+        category: row.category,
+        tags: row.tags,
+        is_favorite: row.is_favorite,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      },
+    ]);
+
+    if (error) {
+      failed += 1;
+      continue;
+    }
+
+    await db.runAsync('UPDATE prompts SET synced_at = ? WHERE id = ?', Date.now(), row.id);
+    synced += 1;
+  }
+
+  return { synced, failed };
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `yarn jest src/lib/sync.test.ts`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/sync.ts src/lib/sync.test.ts
+git commit -m "feat: add one-time local-to-cloud prompt sync"
+```
+
+---
+
+### Task 10: Pull cloud prompts to local
+
+**Files:**
+- Modify: `src/lib/sync.ts`
+- Test: `src/lib/sync.test.ts`
+
+**Interfaces:**
+- Consumes: `getDb` (Task 1), `supabase` (Task 2).
+- Produces: `pullCloudPromptsToLocal(): Promise<{ pulled: number }>`, added to the exports from Task 9, consumed by the Sync screen (Task 11).
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// append to src/lib/sync.test.ts
+import { PERSONAL_VAULT_ID } from './db';
+import { pullCloudPromptsToLocal } from './sync';
+
+describe('pullCloudPromptsToLocal', () => {
+  it('inserts a cloud row that does not exist locally', async () => {
+    const cloudRows = [
+      { id: 'p1', title: 'T1', content: 'C1', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 5 },
+    ];
+    const getFirstAsync = jest.fn().mockResolvedValue(null);
+    const runAsync = jest.fn();
+    const db = { getFirstAsync, runAsync };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const select = jest.fn().mockResolvedValue({ data: cloudRows, error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ select: jest.fn().mockReturnValue({ eq: select }) });
+
+    const result = await pullCloudPromptsToLocal();
+
+    expect(runAsync).toHaveBeenCalledWith(
+      `INSERT INTO prompts (id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      'p1', PERSONAL_VAULT_ID, 'T1', 'C1', null, null, 0, 1, 5, 5
+    );
+    expect(result).toEqual({ pulled: 1 });
+  });
+
+  it('overwrites a local row only when the cloud row is newer', async () => {
+    const cloudRows = [
+      { id: 'p1', title: 'T1-new', content: 'C1-new', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 10 },
+    ];
+    const getFirstAsync = jest.fn().mockResolvedValue({ updated_at: 3 });
+    const runAsync = jest.fn();
+    const db = { getFirstAsync, runAsync };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const select = jest.fn().mockResolvedValue({ data: cloudRows, error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ select: jest.fn().mockReturnValue({ eq: select }) });
+
+    const result = await pullCloudPromptsToLocal();
+
+    expect(runAsync).toHaveBeenCalledWith(
+      'UPDATE prompts SET title = ?, content = ?, category = ?, tags = ?, is_favorite = ?, updated_at = ?, synced_at = ? WHERE id = ?',
+      'T1-new', 'C1-new', null, null, 0, 10, 10, 'p1'
+    );
+    expect(result).toEqual({ pulled: 1 });
+  });
+
+  it('skips a local row that is already newer than or equal to the cloud row', async () => {
+    const cloudRows = [
+      { id: 'p1', title: 'T1-old', content: 'C1-old', category: null, tags: null, is_favorite: 0, created_at: 1, updated_at: 3 },
+    ];
+    const getFirstAsync = jest.fn().mockResolvedValue({ updated_at: 5 });
+    const runAsync = jest.fn();
+    const db = { getFirstAsync, runAsync };
+    (getDb as jest.Mock).mockResolvedValue(db);
+    (supabase.auth.getUser as jest.Mock).mockResolvedValue({ data: { user: { id: 'user-1' } } });
+    const select = jest.fn().mockResolvedValue({ data: cloudRows, error: null });
+    (supabase.from as jest.Mock).mockReturnValue({ select: jest.fn().mockReturnValue({ eq: select }) });
+
+    const result = await pullCloudPromptsToLocal();
+
+    expect(runAsync).not.toHaveBeenCalled();
+    expect(result).toEqual({ pulled: 0 });
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `yarn jest src/lib/sync.test.ts`
+Expected: FAIL — `pullCloudPromptsToLocal is not a function`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// append to src/lib/sync.ts
+import { PERSONAL_VAULT_ID } from './db';
+
+type CloudPromptRow = {
+  id: string;
+  title: string;
+  content: string;
+  category: string | null;
+  tags: string | null;
+  is_favorite: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export async function pullCloudPromptsToLocal(): Promise<{ pulled: number }> {
+  const db = await getDb();
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) throw new Error('not_authenticated');
+
+  const { data: cloudRows, error } = await supabase
+    .from('prompts')
+    .select('id, title, content, category, tags, is_favorite, created_at, updated_at')
+    .eq('user_id', userId);
+  if (error) throw new Error(error.message);
+
+  let pulled = 0;
+
+  for (const row of (cloudRows ?? []) as CloudPromptRow[]) {
+    const local = await db.getFirstAsync<{ updated_at: number }>(
+      'SELECT updated_at FROM prompts WHERE id = ?',
+      row.id
+    );
+
+    if (!local) {
+      await db.runAsync(
+        `INSERT INTO prompts (id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        row.id, PERSONAL_VAULT_ID, row.title, row.content, row.category, row.tags,
+        row.is_favorite, row.created_at, row.updated_at, row.updated_at
+      );
+      pulled += 1;
+      continue;
+    }
+
+    if (row.updated_at > local.updated_at) {
+      await db.runAsync(
+        'UPDATE prompts SET title = ?, content = ?, category = ?, tags = ?, is_favorite = ?, updated_at = ?, synced_at = ? WHERE id = ?',
+        row.title, row.content, row.category, row.tags, row.is_favorite, row.updated_at, row.updated_at, row.id
+      );
+      pulled += 1;
+    }
+  }
+
+  return { pulled };
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `yarn jest src/lib/sync.test.ts`
+Expected: PASS (5 tests total in this file)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/sync.ts src/lib/sync.test.ts
+git commit -m "feat: add cloud-to-local prompt pull for multi-device sync"
+```
+
+---
+
+### Task 11: Sync screen
+
+**Files:**
+- Create: `src/app/onboarding/sync.tsx`
+
+**Interfaces:**
+- Consumes: `pushLocalPromptsToCloud`, `pullCloudPromptsToLocal` from `src/lib/sync.ts` (Tasks 9-10).
+
+- [ ] **Step 1: Implement the screen**
+
+```typescript
+// src/app/onboarding/sync.tsx
+import { useState } from 'react';
+import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { router } from 'expo-router';
+import { pushLocalPromptsToCloud, pullCloudPromptsToLocal } from '@/lib/sync';
+
+export default function SyncScreen() {
+  const [status, setStatus] = useState<'idle' | 'syncing' | 'done'>('idle');
+  const [result, setResult] = useState<{ synced: number; failed: number; pulled: number } | null>(null);
+
+  async function handleSync() {
+    setStatus('syncing');
+    const pushResult = await pushLocalPromptsToCloud();
+    const pullResult = await pullCloudPromptsToLocal();
+    setResult({ ...pushResult, pulled: pullResult.pulled });
+    setStatus('done');
+  }
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Đồng bộ dữ liệu?</Text>
+      <Text style={styles.subtitle}>
+        Đồng bộ prompt giữa máy này và tài khoản của bạn — đẩy prompt mới trên máy lên, và tải về prompt đã lưu từ thiết bị khác.
+      </Text>
+
+      {status === 'done' && result && (
+        <Text style={styles.resultText}>
+          Đã gửi {result.synced} prompt{result.failed > 0 ? `, ${result.failed} lỗi` : ''}, tải về {result.pulled} prompt.
+        </Text>
+      )}
+
+      <Pressable style={styles.primaryButton} onPress={handleSync} disabled={status === 'syncing'}>
+        {status === 'syncing' ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.primaryButtonText}>Đồng bộ ngay</Text>
+        )}
+      </Pressable>
+
+      <Pressable onPress={() => router.replace('/')}>
+        <Text style={styles.secondaryText}>Để sau</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 16 },
+  title: { fontSize: 24, fontWeight: '700', textAlign: 'center' },
+  subtitle: { fontSize: 16, textAlign: 'center', color: '#555' },
+  resultText: { textAlign: 'center', color: '#208AEF' },
+  primaryButton: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
+  primaryButtonText: { color: '#fff', fontWeight: '600' },
+  secondaryText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
+});
+```
+
+- [ ] **Step 2: Manual verification (full flow, per spec §8), including two-device convergence**
+
+Run: `yarn start`. Confirm: guest flow never sees onboarding screens unless "Đăng nhập để đồng bộ" is tapped; sign-up creates a `profiles` row (check Supabase Table Editor); sign-in with a wrong password shows the inline error; Google SSO round-trips back to `/onboarding/sync`; tapping "Đồng bộ ngay" with local prompts present (insert a test row manually via `db.runAsync` in a debug script if none exist yet) upserts them into Supabase's `prompts` table and sets `synced_at` locally.
+
+Two-device check: sign into the same account from a second simulator/device (or a second local db by clearing app storage after the first sync), tap "Đồng bộ ngay" there, and confirm the prompt created on the first device now appears locally on the second.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/app/onboarding/sync.tsx
+git commit -m "feat: add sync screen with two-way push/pull for multi-device"
+```
+
+---
+
+### Task 12: Encrypted session storage adapter
+
+**Files:**
+- Create: `src/lib/secureStorage.ts`
+- Test: `src/lib/secureStorage.test.ts`
+- Modify: `package.json` (new dependencies)
+
+**Interfaces:**
+- Produces: `LargeSecureStore: { getItem, setItem, removeItem }` — a `SupportedStorage`-shaped object matching what `supabase-js`'s `auth.storage` expects, consumed by Task 13.
+
+- [ ] **Step 1: Install dependencies**
+
+Run: `yarn add expo-secure-store expo-crypto aes-js` then `yarn add -D @types/aes-js` (`expo-crypto` was missing from this list originally — the implementation below imports it directly, so it must be installed here, not left as an incidental transitive dependency).
+
+- [ ] **Step 2: Write the failing test**
+
+```typescript
+// src/lib/secureStorage.test.ts
+jest.mock('expo-crypto', () => {
+  let callCount = 0;
+  return {
+    getRandomBytesAsync: jest.fn(async (n: number) => {
+      callCount += 1;
+      return new Uint8Array(n).fill(callCount);
+    }),
+  };
+});
+
+jest.mock('expo-secure-store', () => {
+  const store = new Map<string, string>();
+  return {
+    getItemAsync: jest.fn(async (k: string) => store.get(k) ?? null),
+    setItemAsync: jest.fn(async (k: string, v: string) => {
+      store.set(k, v);
+    }),
+    deleteItemAsync: jest.fn(async (k: string) => {
+      store.delete(k);
+    }),
+  };
+});
+
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const store = new Map<string, string>();
+  return {
+    __esModule: true,
+    default: {
+      getItem: jest.fn(async (k: string) => store.get(k) ?? null),
+      setItem: jest.fn(async (k: string, v: string) => {
+        store.set(k, v);
+      }),
+      removeItem: jest.fn(async (k: string) => {
+        store.delete(k);
+      }),
+    },
+  };
+});
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LargeSecureStore } from './secureStorage';
+
+describe('LargeSecureStore', () => {
+  it('round-trips a value through encryption', async () => {
+    await LargeSecureStore.setItem('session', 'plaintext-value');
+    const result = await LargeSecureStore.getItem('session');
+    expect(result).toBe('plaintext-value');
+  });
+
+  it('stores ciphertext, not the plaintext, in AsyncStorage', async () => {
+    await LargeSecureStore.setItem('session', 'plaintext-value');
+    const raw = await AsyncStorage.getItem('session');
+    expect(raw).not.toBe('plaintext-value');
+    expect(raw).not.toContain('plaintext-value');
+  });
+
+  it('returns null for a missing key', async () => {
+    const result = await LargeSecureStore.getItem('missing-key');
+    expect(result).toBeNull();
+  });
+
+  it('uses a fresh counter for each write, so identical plaintexts produce different ciphertext', async () => {
+    await LargeSecureStore.setItem('session', 'same-value');
+    const first = await AsyncStorage.getItem('session');
+    await LargeSecureStore.setItem('session', 'same-value');
+    const second = await AsyncStorage.getItem('session');
+    expect(first).not.toBe(second);
+  });
+});
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `yarn jest src/lib/secureStorage.test.ts`
+Expected: FAIL — `Cannot find module './secureStorage'`
+
+- [ ] **Step 4: Write minimal implementation**
+
+**Security note:** AES-CTR mode is only safe if the (key, counter) pair is never reused across two different plaintexts encrypted under the same key. Since the key is persisted and reused for every write to a given storage key (e.g. every session refresh), each `setItem` call generates and stores a fresh random 16-byte counter alongside the ciphertext, and `getItem` extracts that counter back out — never a fixed counter value.
+
+```typescript
+// src/lib/secureStorage.ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+import * as Crypto from 'expo-crypto';
+import * as aesjs from 'aes-js';
+
+function toHex(bytes: Uint8Array): string {
+  return aesjs.utils.hex.fromBytes(bytes);
+}
+
+function fromHex(hex: string): Uint8Array {
+  return aesjs.utils.hex.toBytes(hex);
+}
+
+async function getOrCreateKey(storageKey: string): Promise<Uint8Array> {
+  const keyName = `${storageKey}_enc_key`;
+  const existing = await SecureStore.getItemAsync(keyName);
+  if (existing) return fromHex(existing);
+
+  const key = await Crypto.getRandomBytesAsync(32);
+  await SecureStore.setItemAsync(keyName, toHex(key));
+  return key;
+}
+
+const COUNTER_HEX_LENGTH = 32; // 16 bytes, hex-encoded
+
+export const LargeSecureStore = {
+  async getItem(key: string): Promise<string | null> {
+    const stored = await AsyncStorage.getItem(key);
+    if (!stored) return null;
+
+    const counterHex = stored.slice(0, COUNTER_HEX_LENGTH);
+    const cipherHex = stored.slice(COUNTER_HEX_LENGTH);
+    const keyBytes = await getOrCreateKey(key);
+    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(fromHex(counterHex)));
+    const decryptedBytes = cipher.decrypt(fromHex(cipherHex));
+    return aesjs.utils.utf8.fromBytes(decryptedBytes);
+  },
+
+  async setItem(key: string, value: string): Promise<void> {
+    const keyBytes = await getOrCreateKey(key);
+    const counterBytes = await Crypto.getRandomBytesAsync(16);
+    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(counterBytes));
+    const encryptedBytes = cipher.encrypt(aesjs.utils.utf8.toBytes(value));
+    await AsyncStorage.setItem(key, toHex(counterBytes) + toHex(encryptedBytes));
+  },
+
+  async removeItem(key: string): Promise<void> {
+    await AsyncStorage.removeItem(key);
+    await SecureStore.deleteItemAsync(`${key}_enc_key`);
+  },
+};
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `yarn jest src/lib/secureStorage.test.ts`
+Expected: PASS (4 tests)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/secureStorage.ts src/lib/secureStorage.test.ts package.json yarn.lock
+git commit -m "feat: add AES-encrypted large secure store for session persistence"
+```
+
+---
+
+### Task 13: Wire encrypted storage into the Supabase client
+
+**Files:**
+- Modify: `src/lib/supabase.ts`
+- Modify: `src/lib/supabase.test.ts`
+
+**Interfaces:**
+- Consumes: `LargeSecureStore` from `src/lib/secureStorage.ts` (Task 12).
+
+- [ ] **Step 1: Update the implementation**
+
+```typescript
+// src/lib/supabase.ts — replace the AsyncStorage import and storage option
+import { createClient } from '@supabase/supabase-js';
+import { LargeSecureStore } from './secureStorage';
+
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    storage: LargeSecureStore,
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
+  },
+});
+```
+
+- [ ] **Step 2: Run the existing test to verify it fails**
+
+Run: `yarn jest src/lib/supabase.test.ts`
+Expected: FAIL — error thrown by `expo-secure-store`/`expo-crypto`/`aes-js` native module resolution when `secureStorage.ts` loads unmocked in the test environment.
+
+- [ ] **Step 3: Add the required mocks to the test**
+
+```typescript
+// src/lib/supabase.test.ts — add above the existing import
+jest.mock('expo-crypto', () => ({
+  getRandomBytesAsync: jest.fn(async (n: number) => new Uint8Array(n).fill(7)),
+}));
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: jest.fn(async () => null),
+  setItemAsync: jest.fn(async () => undefined),
+  deleteItemAsync: jest.fn(async () => undefined),
+}));
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: {
+    getItem: jest.fn(async () => null),
+    setItem: jest.fn(async () => undefined),
+    removeItem: jest.fn(async () => undefined),
+  },
+}));
+
+import { supabase } from './supabase';
+
+describe('supabase client', () => {
+  it('is configured with auth persistence enabled', () => {
+    expect(supabase).toBeDefined();
+    expect(supabase.auth).toBeDefined();
+  });
+});
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `yarn jest src/lib/supabase.test.ts`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/supabase.ts src/lib/supabase.test.ts
+git commit -m "feat: encrypt persisted Supabase session with LargeSecureStore"
+```
+
+---
+
+### Task 14: Biometric authentication wrapper
+
+**Files:**
+- Create: `src/lib/biometric.ts`
+- Test: `src/lib/biometric.test.ts`
+- Modify: `app.json` (expo-local-authentication plugin config)
+- Modify: `package.json`
+
+**Interfaces:**
+- Produces: `isBiometricAvailable(): Promise<boolean>`, `authenticateWithBiometric(): Promise<boolean>` — consumed by the Settings screen and root layout lock gate (Task 16).
+
+- [ ] **Step 1: Install the dependency**
+
+Run: `yarn add expo-local-authentication`
+
+- [ ] **Step 2: Add the Expo config plugin**
+
+```json
+// app.json — inside "expo.plugins", alongside the existing entries
+[
+  "expo-local-authentication",
+  {
+    "faceIDPermission": "Cho phép PromptVault dùng Face ID để mở khoá app."
+  }
+]
+```
+
+- [ ] **Step 3: Write the failing test**
+
+```typescript
+// src/lib/biometric.test.ts
+jest.mock('expo-local-authentication', () => ({
+  hasHardwareAsync: jest.fn(),
+  isEnrolledAsync: jest.fn(),
+  authenticateAsync: jest.fn(),
+}));
+
+import * as LocalAuthentication from 'expo-local-authentication';
+import { isBiometricAvailable, authenticateWithBiometric } from './biometric';
+
+describe('isBiometricAvailable', () => {
+  it('is false when the device has no biometric hardware', async () => {
+    (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(false);
+
+    expect(await isBiometricAvailable()).toBe(false);
+  });
+
+  it('is false when hardware exists but nothing is enrolled', async () => {
+    (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
+    (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(false);
+
+    expect(await isBiometricAvailable()).toBe(false);
+  });
+
+  it('is true when hardware exists and is enrolled', async () => {
+    (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
+    (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
+
+    expect(await isBiometricAvailable()).toBe(true);
+  });
+});
+
+describe('authenticateWithBiometric', () => {
+  it('returns true on success', async () => {
+    (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: true });
+
+    expect(await authenticateWithBiometric()).toBe(true);
+  });
+
+  it('returns false on failure or cancel', async () => {
+    (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: false });
+
+    expect(await authenticateWithBiometric()).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 4: Run tests to verify they fail**
+
+Run: `yarn jest src/lib/biometric.test.ts`
+Expected: FAIL — `Cannot find module './biometric'`
+
+- [ ] **Step 5: Write minimal implementation**
+
+```typescript
+// src/lib/biometric.ts
+import * as LocalAuthentication from 'expo-local-authentication';
+
+export async function isBiometricAvailable(): Promise<boolean> {
+  const hasHardware = await LocalAuthentication.hasHardwareAsync();
+  if (!hasHardware) return false;
+  return LocalAuthentication.isEnrolledAsync();
+}
+
+export async function authenticateWithBiometric(): Promise<boolean> {
+  const result = await LocalAuthentication.authenticateAsync({
+    promptMessage: 'Mở khoá PromptVault',
+  });
+  return result.success;
+}
+```
+
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run: `yarn jest src/lib/biometric.test.ts`
+Expected: PASS (5 tests)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/lib/biometric.ts src/lib/biometric.test.ts app.json package.json yarn.lock
+git commit -m "feat: add biometric authentication wrapper"
+```
+
+---
+
+### Task 15: App-lock preference storage
+
+**Files:**
+- Create: `src/lib/appLock.ts`
+- Test: `src/lib/appLock.test.ts`
+
+**Interfaces:**
+- Produces: `isAppLockEnabled(): Promise<boolean>`, `setAppLockEnabled(enabled: boolean): Promise<void>` — consumed by the Settings screen and root layout (Task 16).
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// src/lib/appLock.test.ts
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const store = new Map<string, string>();
+  return {
+    __esModule: true,
+    default: {
+      getItem: jest.fn(async (k: string) => store.get(k) ?? null),
+      setItem: jest.fn(async (k: string, v: string) => {
+        store.set(k, v);
+      }),
+    },
+  };
+});
+
+import { isAppLockEnabled, setAppLockEnabled } from './appLock';
+
+describe('appLock', () => {
+  it('defaults to disabled', async () => {
+    expect(await isAppLockEnabled()).toBe(false);
+  });
+
+  it('persists true after being enabled', async () => {
+    await setAppLockEnabled(true);
+    expect(await isAppLockEnabled()).toBe(true);
+  });
+
+  it('persists false after being disabled again', async () => {
+    await setAppLockEnabled(true);
+    await setAppLockEnabled(false);
+    expect(await isAppLockEnabled()).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `yarn jest src/lib/appLock.test.ts`
+Expected: FAIL — `Cannot find module './appLock'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// src/lib/appLock.ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const APP_LOCK_KEY = 'appLockEnabled';
+
+export async function isAppLockEnabled(): Promise<boolean> {
+  const value = await AsyncStorage.getItem(APP_LOCK_KEY);
+  return value === 'true';
+}
+
+export async function setAppLockEnabled(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(APP_LOCK_KEY, enabled ? 'true' : 'false');
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `yarn jest src/lib/appLock.test.ts`
+Expected: PASS (3 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/appLock.ts src/lib/appLock.test.ts
+git commit -m "feat: add app-lock preference storage"
+```
+
+---
+
+### Task 16: Settings screen and root-layout lock gate
+
+**Files:**
+- Create: `src/app/settings.tsx`
+- Modify: `src/app/_layout.tsx`
+
+**Interfaces:**
+- Consumes: `isBiometricAvailable`, `authenticateWithBiometric` (Task 14); `isAppLockEnabled`, `setAppLockEnabled` (Task 15).
+
+- [ ] **Step 1: Implement the Settings screen**
+
+```typescript
+// src/app/settings.tsx
+import { useEffect, useState } from 'react';
+import { View, Text, Switch, StyleSheet } from 'react-native';
+import { isBiometricAvailable, authenticateWithBiometric } from '@/lib/biometric';
+import { isAppLockEnabled, setAppLockEnabled } from '@/lib/appLock';
+
+export default function SettingsScreen() {
+  const [available, setAvailable] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+
+  useEffect(() => {
+    isBiometricAvailable().then(setAvailable);
+    isAppLockEnabled().then(setEnabled);
+  }, []);
+
+  async function handleToggle(next: boolean) {
+    if (next) {
+      const confirmed = await authenticateWithBiometric();
+      if (!confirmed) return;
+    }
+    await setAppLockEnabled(next);
+    setEnabled(next);
+  }
+
+  if (!available) return null;
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.row}>
+        <Text style={styles.label}>Khoá bằng vân tay/Face ID</Text>
+        <Switch value={enabled} onValueChange={handleToggle} />
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, padding: 24 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  label: { fontSize: 16 },
+});
+```
+
+- [ ] **Step 2: Implement the root-layout lock gate**
+
+```typescript
+// src/app/_layout.tsx
+import { useEffect, useRef, useState } from 'react';
+import { AppState, AppStateStatus, View, Text, Pressable, StyleSheet } from 'react-native';
+import { Stack } from 'expo-router';
+import { isAppLockEnabled } from '@/lib/appLock';
+import { authenticateWithBiometric } from '@/lib/biometric';
+
+export default function RootLayout() {
+  const [checked, setChecked] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const appState = useRef<AppStateStatus>(AppState.currentState);
+
+  async function checkLock() {
+    const enabled = await isAppLockEnabled();
+    setLocked(enabled);
+    setChecked(true);
+  }
+
+  useEffect(() => {
+    checkLock();
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (appState.current.match(/inactive|background/) && next === 'active') {
+        checkLock();
+      }
+      appState.current = next;
+    });
+    return () => subscription.remove();
+  }, []);
+
+  async function handleUnlock() {
+    const success = await authenticateWithBiometric();
+    if (success) setLocked(false);
+  }
+
+  if (!checked) return null;
+
+  if (locked) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>PromptVault đã khoá</Text>
+        <Pressable style={styles.button} onPress={handleUnlock}>
+          <Text style={styles.buttonText}>Mở khoá</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return <Stack />;
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
+  title: { fontSize: 20, fontWeight: '600' },
+  button: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14 },
+  buttonText: { color: '#fff', fontWeight: '600' },
+});
+```
+
+- [ ] **Step 3: Manual verification**
+
+Run: `yarn start` on a device/simulator with biometrics enrolled. Confirm: Settings screen hides the toggle entirely on a device without biometric hardware; enabling the toggle prompts biometric auth immediately (as a confirmation, not just a checkbox flip); after enabling, backgrounding and foregrounding the app shows the lock screen and requires a successful `authenticateAsync` before `<Stack />` renders; disabling the toggle removes the lock on next launch.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/app/settings.tsx src/app/_layout.tsx
+git commit -m "feat: add biometric app-lock settings toggle and lock gate"
+```
+
+---
+
+## Stage Summary
+
+- **Stage 1 (Tasks 0-3):** env fix, local schema, Supabase client, Supabase tables/RLS. No user-visible change.
+- **Stage 2 (Tasks 4-6):** working email/password auth end-to-end, session-aware home screen.
+- **Stage 3 (Tasks 7-8):** Google SSO added to the same Auth screen.
+- **Stage 4 (Tasks 9-11):** two-way sync (push local → cloud, pull cloud → local) so the same account's personal vault converges across devices.
+- **Stage 5 (Tasks 12-16):** encrypted session storage (always on) and an opt-in biometric app lock protecting both the cloud session and the local vault.
+
+Each stage's tasks can ship and be demoed independently; later stages only add to what's already working.

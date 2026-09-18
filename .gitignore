@@ -42,3 +42,8 @@ example
 /ios
 /android
 .env*
+# Android signing
+*.keystore
+*.jks
+android/app/release.keystore
+android/keystore.properties
