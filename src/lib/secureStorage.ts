@@ -38,12 +38,17 @@ export const LargeSecureStore = {
     const stored = await AsyncStorage.getItem(key);
     if (!stored) return null;
 
-    const counterHex = stored.slice(0, COUNTER_HEX_LENGTH);
-    const cipherHex = stored.slice(COUNTER_HEX_LENGTH);
-    const keyBytes = await getOrCreateKey(key);
-    const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(fromHex(counterHex)));
-    const decryptedBytes = cipher.decrypt(fromHex(cipherHex));
-    return aesjs.utils.utf8.fromBytes(decryptedBytes);
+    try {
+      const counterHex = stored.slice(0, COUNTER_HEX_LENGTH);
+      const cipherHex = stored.slice(COUNTER_HEX_LENGTH);
+      const keyBytes = await getOrCreateKey(key);
+      const cipher = new aesjs.ModeOfOperation.ctr(keyBytes, new aesjs.Counter(fromHex(counterHex)));
+      const decryptedBytes = cipher.decrypt(fromHex(cipherHex));
+      return aesjs.utils.utf8.fromBytes(decryptedBytes);
+    } catch {
+      await LargeSecureStore.removeItem(key);
+      return null;
+    }
   },
 
   async setItem(key: string, value: string): Promise<void> {
@@ -55,7 +60,9 @@ export const LargeSecureStore = {
   },
 
   async removeItem(key: string): Promise<void> {
+    const keyName = `${key}_enc_key`;
+    keyCreationPromises.delete(keyName);
     await AsyncStorage.removeItem(key);
-    await SecureStore.deleteItemAsync(`${key}_enc_key`);
+    await SecureStore.deleteItemAsync(keyName);
   },
 };

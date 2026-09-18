@@ -74,4 +74,18 @@ describe('LargeSecureStore', () => {
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('session');
     expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('session_enc_key');
   });
+
+  it('generates a fresh key after removeItem, not the stale memoized one', async () => {
+    await LargeSecureStore.setItem('session', 'first-value');
+    await LargeSecureStore.removeItem('session');
+    await LargeSecureStore.setItem('session', 'second-value');
+    const result = await LargeSecureStore.getItem('session');
+    expect(result).toBe('second-value');
+  });
+
+  it('returns null instead of throwing when stored data cannot be decrypted', async () => {
+    await AsyncStorage.setItem('corrupted', 'not-valid-hex-data-zzz');
+    const result = await LargeSecureStore.getItem('corrupted');
+    expect(result).toBeNull();
+  });
 });
