@@ -17,7 +17,8 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.ntp.PropmtVaults"
     },
     "web": {
       "output": "static",
@@ -33,7 +34,13 @@
           "imageWidth": 76
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Cho phép PromptVault dùng Face ID để mở khoá app."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
@@ -45,6 +52,6 @@
         "projectId": "ccbec8e0-eefe-4684-aee8-104a25af4a96"
       }
     },
-    "owner": "12333kkkdsaf"
+    "owner": "ntp"
   }
 }
