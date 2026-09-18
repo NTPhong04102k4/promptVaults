@@ -10,10 +10,11 @@ export default function SyncScreen() {
 
   async function handleSync() {
     setError(null);
+    setResult(null);
     setStatus('syncing');
     try {
-      const pushResult = await pushLocalPromptsToCloud();
       const pullResult = await pullCloudPromptsToLocal();
+      const pushResult = await pushLocalPromptsToCloud();
       setResult({ ...pushResult, pulled: pullResult.pulled });
       setStatus('done');
     } catch {
