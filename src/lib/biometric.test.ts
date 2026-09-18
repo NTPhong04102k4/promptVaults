@@ -41,4 +41,10 @@ describe('authenticateWithBiometric', () => {
 
     expect(await authenticateWithBiometric()).toBe(false);
   });
+
+  it('returns false instead of throwing if authentication itself errors', async () => {
+    (LocalAuthentication.authenticateAsync as jest.Mock).mockRejectedValue(new Error('no biometrics enrolled'));
+
+    expect(await authenticateWithBiometric()).toBe(false);
+  });
 });

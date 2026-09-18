@@ -7,8 +7,12 @@ export async function isBiometricAvailable(): Promise<boolean> {
 }
 
 export async function authenticateWithBiometric(): Promise<boolean> {
-  const result = await LocalAuthentication.authenticateAsync({
-    promptMessage: 'Mở khoá PromptVault',
-  });
-  return result.success;
+  try {
+    const result = await LocalAuthentication.authenticateAsync({
+      promptMessage: 'Mở khoá PromptVault',
+    });
+    return result.success;
+  } catch {
+    return false;
+  }
 }

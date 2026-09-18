@@ -21,7 +21,7 @@ export default function SettingsScreen() {
     setEnabled(next);
   }
 
-  if (!available) return null;
+  if (!available && !enabled) return null;
 
   return (
     <View style={styles.container}>
