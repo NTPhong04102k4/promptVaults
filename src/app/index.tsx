@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Text, View, StyleSheet, Pressable } from 'react-native';
+import { StyleSheet, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import type { Session } from '@supabase/supabase-js';
 import { getSession, onAuthStateChange, signOut } from '@/lib/auth';
+import { ThemedView, ThemedText } from '@/components/Themed';
 
 export default function Index() {
   const [session, setSession] = useState<Session | null>(null);
@@ -13,25 +14,25 @@ export default function Index() {
   }, []);
 
   return (
-    <View style={styles.container}>
-      <Text>Edit src/app/index.tsx to edit this screen.</Text>
+    <ThemedView style={styles.container}>
+      <ThemedText>Edit src/app/index.tsx to edit this screen.</ThemedText>
 
       <Pressable onPress={() => router.push('/onboarding/welcome')} style={styles.accountRow}>
-        <Text style={styles.accountText}>
+        <ThemedText color="primary">
           {session ? `Đã đồng bộ với ${session.user.email}` : 'Đăng nhập để đồng bộ'}
-        </Text>
+        </ThemedText>
       </Pressable>
 
       <Pressable onPress={() => router.push('/settings')} style={styles.accountRow}>
-        <Text style={styles.accountText}>Cài đặt</Text>
+        <ThemedText color="primary">Cài đặt</ThemedText>
       </Pressable>
 
       {session && (
         <Pressable onPress={() => signOut()} style={styles.accountRow}>
-          <Text style={styles.accountText}>Đăng xuất</Text>
+          <ThemedText color="primary">Đăng xuất</ThemedText>
         </Pressable>
       )}
-    </View>
+    </ThemedView>
   );
 }
 
@@ -43,5 +44,4 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   accountRow: { padding: 12 },
-  accountText: { color: '#208AEF' },
 });
