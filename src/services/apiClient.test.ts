@@ -1,15 +1,15 @@
 import { apiClient, ApiError } from './apiClient';
 
 describe('apiClient', () => {
-  const originalFetch = global.fetch;
+  const originalFetch = globalThis.fetch;
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
     jest.resetAllMocks();
   });
 
   it('sends a GET request and returns the parsed JSON body', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => ({ id: 1, name: 'test' }),
@@ -18,14 +18,14 @@ describe('apiClient', () => {
     const result = await apiClient.get<{ id: number; name: string }>('https://example.com/items/1');
 
     expect(result).toEqual({ id: 1, name: 'test' });
-    expect(global.fetch).toHaveBeenCalledWith(
+    expect(globalThis.fetch).toHaveBeenCalledWith(
       'https://example.com/items/1',
       expect.objectContaining({ method: 'GET' })
     );
   });
 
   it('sends a POST request with a JSON-serialized body and Content-Type header', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 201,
       json: async () => ({ created: true }),
@@ -33,7 +33,7 @@ describe('apiClient', () => {
 
     await apiClient.post('https://example.com/items', { name: 'new' });
 
-    expect(global.fetch).toHaveBeenCalledWith(
+    expect(globalThis.fetch).toHaveBeenCalledWith(
       'https://example.com/items',
       expect.objectContaining({
         method: 'POST',
@@ -44,7 +44,7 @@ describe('apiClient', () => {
   });
 
   it('throws an ApiError with the parsed message on a non-2xx response', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: false,
       status: 404,
       statusText: 'Not Found',
@@ -58,7 +58,7 @@ describe('apiClient', () => {
   });
 
   it('falls back to statusText when the error body has no message', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: false,
       status: 500,
       statusText: 'Internal Server Error',
@@ -74,7 +74,7 @@ describe('apiClient', () => {
   });
 
   it('exposes ApiError as the rejected error type', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: false,
       status: 400,
       statusText: 'Bad Request',
