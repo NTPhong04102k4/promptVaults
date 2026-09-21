@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { View, TextInput, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { signInWithEmail, signUpWithEmail, signInWithGoogle } from '@/lib/auth';
+import { useTheme } from '@/theme/ThemeProvider';
+import { ThemedView, ThemedText } from '@/components/Themed';
 
 const ERROR_MESSAGES: Record<string, string> = {
   user_already_exists: 'Email này đã được đăng ký.',
@@ -16,6 +18,7 @@ function friendlyError(message: string): string {
 }
 
 export default function AuthScreen() {
+  const { theme } = useTheme();
   const { mode: initialMode } = useLocalSearchParams<{ mode?: string }>();
   const [mode, setMode] = useState<'signup' | 'signin'>(
     initialMode === 'signup' ? 'signup' : 'signin'
@@ -58,28 +61,38 @@ export default function AuthScreen() {
     }
   }
 
+  const inputStyle = [
+    styles.input,
+    { borderColor: theme.colors.border, borderRadius: theme.spacing.radius.md, color: theme.colors.text },
+  ];
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>{mode === 'signup' ? 'Đăng ký' : 'Đăng nhập'}</Text>
+    <ThemedView style={styles.container}>
+      <ThemedText variant="h2" style={styles.title}>
+        {mode === 'signup' ? 'Đăng ký' : 'Đăng nhập'}
+      </ThemedText>
 
       {mode === 'signup' && (
         <>
           <TextInput
-            style={styles.input}
+            style={inputStyle}
             placeholder="Username"
+            placeholderTextColor={theme.colors.textSecondary}
             autoCapitalize="none"
             value={username}
             onChangeText={setUsername}
           />
           <TextInput
-            style={styles.input}
+            style={inputStyle}
             placeholder="Tên"
+            placeholderTextColor={theme.colors.textSecondary}
             value={firstName}
             onChangeText={setFirstName}
           />
           <TextInput
-            style={styles.input}
+            style={inputStyle}
             placeholder="Họ"
+            placeholderTextColor={theme.colors.textSecondary}
             value={lastName}
             onChangeText={setLastName}
           />
@@ -87,52 +100,70 @@ export default function AuthScreen() {
       )}
 
       <TextInput
-        style={styles.input}
+        style={inputStyle}
         placeholder="Email"
+        placeholderTextColor={theme.colors.textSecondary}
         autoCapitalize="none"
         keyboardType="email-address"
         value={email}
         onChangeText={setEmail}
       />
       <TextInput
-        style={styles.input}
+        style={inputStyle}
         placeholder="Mật khẩu"
+        placeholderTextColor={theme.colors.textSecondary}
         secureTextEntry
         value={password}
         onChangeText={setPassword}
       />
 
-      {error && <Text style={styles.error}>{error}</Text>}
+      {error && (
+        <ThemedText color="error">
+          {error}
+        </ThemedText>
+      )}
 
-      <Pressable style={styles.button} onPress={handleSubmit} disabled={loading}>
+      <Pressable
+        style={[styles.button, { backgroundColor: theme.colors.primary, borderRadius: theme.spacing.radius.md }]}
+        onPress={handleSubmit}
+        disabled={loading}
+      >
         {loading ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.buttonText}>{mode === 'signup' ? 'Đăng ký' : 'Đăng nhập'}</Text>
+          <ThemedText style={styles.buttonText}>{mode === 'signup' ? 'Đăng ký' : 'Đăng nhập'}</ThemedText>
         )}
       </Pressable>
 
       <Pressable onPress={() => setMode(mode === 'signup' ? 'signin' : 'signup')}>
-        <Text style={styles.switchText}>
+        <ThemedText color="primary" style={styles.switchText}>
           {mode === 'signup' ? 'Đã có tài khoản? Đăng nhập' : 'Chưa có tài khoản? Đăng ký'}
-        </Text>
+        </ThemedText>
       </Pressable>
 
-      <Pressable style={styles.googleButton} onPress={handleGoogleSignIn} disabled={loading}>
-        <Text style={styles.googleButtonText}>Tiếp tục với Google</Text>
+      <Pressable
+        style={[
+          styles.googleButton,
+          { borderColor: theme.colors.primary, borderRadius: theme.spacing.radius.md },
+        ]}
+        onPress={handleGoogleSignIn}
+        disabled={loading}
+      >
+        <ThemedText color="primary" style={styles.googleButtonText}>
+          Tiếp tục với Google
+        </ThemedText>
       </Pressable>
-    </View>
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
-  title: { fontSize: 24, fontWeight: '600', marginBottom: 12 },
-  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
-  button: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
+  title: { marginBottom: 12 },
+  input: { borderWidth: 1, padding: 12 },
+  button: { padding: 14, alignItems: 'center' },
   buttonText: { color: '#fff', fontWeight: '600' },
-  error: { color: '#D14343' },
-  switchText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
-  googleButton: { borderWidth: 1, borderColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 8 },
-  googleButtonText: { color: '#208AEF', fontWeight: '600' },
+  switchText: { textAlign: 'center', marginTop: 8 },
+  googleButton: { borderWidth: 1, padding: 14, alignItems: 'center', marginTop: 8 },
+  googleButtonText: { fontWeight: '600' },
 });

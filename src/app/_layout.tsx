@@ -1,19 +1,41 @@
 import { useEffect, useRef, useState } from 'react';
-import { AppState, AppStateStatus, View, Text, Pressable, StyleSheet } from 'react-native';
+import { AppState, AppStateStatus, Text, Pressable, StyleSheet } from 'react-native';
 import { Stack } from 'expo-router';
 import { isAppLockEnabled } from '@/lib/appLock';
 import { authenticateWithBiometric } from '@/lib/biometric';
 import { isOAuthInProgress } from '@/lib/oauthState';
+import { getSession, onAuthStateChange } from '@/lib/auth';
+import { useSessionStore } from '@/store/sessionStore';
+import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
+import { ThemedView, ThemedText } from '@/components/Themed';
 
-export default function RootLayout() {
+function LockScreen({ onUnlock }: { onUnlock: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <ThemedView style={styles.container}>
+      <ThemedText variant="h3">PromptVault đã khoá</ThemedText>
+      <Pressable
+        style={[styles.button, { backgroundColor: theme.colors.primary, borderRadius: theme.spacing.radius.md }]}
+        onPress={onUnlock}
+      >
+        <Text style={styles.buttonText}>Mở khoá</Text>
+      </Pressable>
+    </ThemedView>
+  );
+}
+
+function RootNavigator() {
   const [checked, setChecked] = useState(false);
   const [locked, setLocked] = useState(false);
   const appState = useRef<AppStateStatus>(AppState.currentState);
+  const setSession = useSessionStore((s) => s.setSession);
+  const { theme } = useTheme();
 
-  async function checkLock() {
-    const enabled = await isAppLockEnabled();
-    setLocked(enabled);
-    setChecked(true);
+  function checkLock() {
+    isAppLockEnabled().then((enabled) => {
+      setLocked(enabled);
+      setChecked(true);
+    });
   }
 
   useEffect(() => {
@@ -27,6 +49,11 @@ export default function RootLayout() {
     return () => subscription.remove();
   }, []);
 
+  useEffect(() => {
+    getSession().then(setSession);
+    return onAuthStateChange(setSession);
+  }, [setSession]);
+
   async function handleUnlock() {
     const success = await authenticateWithBiometric();
     if (success) setLocked(false);
@@ -35,22 +62,30 @@ export default function RootLayout() {
   if (!checked) return null;
 
   if (locked) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.title}>PromptVault đã khoá</Text>
-        <Pressable style={styles.button} onPress={handleUnlock}>
-          <Text style={styles.buttonText}>Mở khoá</Text>
-        </Pressable>
-      </View>
-    );
+    return <LockScreen onUnlock={handleUnlock} />;
   }
 
-  return <Stack />;
+  return (
+    <Stack
+      screenOptions={{
+        headerStyle: { backgroundColor: theme.colors.surface },
+        headerTintColor: theme.colors.text,
+        contentStyle: { backgroundColor: theme.colors.background },
+      }}
+    />
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <RootNavigator />
+    </ThemeProvider>
+  );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
-  title: { fontSize: 20, fontWeight: '600' },
-  button: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14 },
+  button: { padding: 14 },
   buttonText: { color: '#fff', fontWeight: '600' },
 });
