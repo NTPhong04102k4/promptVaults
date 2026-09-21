@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View, Pressable, StyleSheet } from 'react-native';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import * as Clipboard from 'expo-clipboard';
@@ -17,12 +17,22 @@ type PromptCardProps = {
 export function PromptCard({ prompt, onToggleFavorite, onEdit, onDelete, onCopied }: PromptCardProps) {
   const { theme } = useTheme();
   const [copied, setCopied] = useState(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   async function handleCopy() {
     await Clipboard.setStringAsync(prompt.content);
+    if (!isMountedRef.current) return;
     setCopied(true);
     onCopied();
-    setTimeout(() => setCopied(false), 2000);
+    setTimeout(() => {
+      if (isMountedRef.current) setCopied(false);
+    }, 2000);
   }
 
   return (
