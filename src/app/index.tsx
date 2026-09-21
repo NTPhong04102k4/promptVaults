@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
+import { router, Stack, useFocusEffect } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import { signOut } from '@/lib/auth';
 import { useSessionStore } from '@/store/sessionStore';
@@ -16,6 +17,7 @@ const HOME_CATEGORIES = ['Tất cả', 'Video ngắn', 'Mạng xã hội', 'YouT
 
 export default function Index() {
   const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
   const session = useSessionStore((s) => s.session);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -30,9 +32,11 @@ export default function Index() {
     setPrompts(list);
   }, []);
 
-  useEffect(() => {
-    loadPrompts();
-  }, [loadPrompts]);
+  useFocusEffect(
+    useCallback(() => {
+      loadPrompts();
+    }, [loadPrompts])
+  );
 
   const filteredPrompts = useMemo(() => {
     return prompts.filter((p) => {
@@ -59,10 +63,14 @@ export default function Index() {
   }
 
   async function handleSavePrompt(input: SavePromptInput) {
-    await savePrompt(input);
-    setIsModalOpen(false);
-    setEditingPrompt(null);
-    loadPrompts();
+    try {
+      await savePrompt(input);
+      setIsModalOpen(false);
+      setEditingPrompt(null);
+      loadPrompts();
+    } catch {
+      Alert.alert('Lỗi', 'Không thể lưu prompt, thử lại sau.');
+    }
   }
 
   async function handleToggleFavorite(id: string) {
@@ -91,13 +99,19 @@ export default function Index() {
 
   return (
     <ThemedView style={styles.container}>
+      <Stack.Screen options={{ headerShown: false }} />
       <View style={[styles.header, { borderBottomColor: theme.colors.border }]}>
         <ThemedText variant="h2">PromptVault</ThemedText>
         <View style={styles.headerActions}>
           {session ? (
-            <Pressable onPress={() => signOut()} hitSlop={8}>
-              <Ionicons name="log-out-outline" size={22} color={theme.colors.textSecondary} />
-            </Pressable>
+            <View style={styles.sessionRow}>
+              <ThemedText variant="caption" color="secondary" numberOfLines={1} style={styles.sessionEmail}>
+                {session.user.email}
+              </ThemedText>
+              <Pressable onPress={() => signOut()} hitSlop={8}>
+                <Ionicons name="log-out-outline" size={22} color={theme.colors.textSecondary} />
+              </Pressable>
+            </View>
           ) : (
             <Pressable onPress={() => router.push('/onboarding/welcome')} hitSlop={8}>
               <Ionicons name="cloud-offline-outline" size={22} color={theme.colors.primary} />
@@ -152,6 +166,7 @@ export default function Index() {
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}
+        style={styles.categoryList}
         data={HOME_CATEGORIES}
         keyExtractor={(item) => item}
         contentContainerStyle={styles.categoryRow}
@@ -218,7 +233,7 @@ export default function Index() {
         </View>
       )}
 
-      <View style={[styles.bottomBar, { borderTopColor: theme.colors.border }]}>
+      <View style={[styles.bottomBar, { borderTopColor: theme.colors.border, paddingBottom: 8 + insets.bottom }]}>
         <Pressable onPress={() => setOnlyFavorites(false)} style={styles.bottomBarItem}>
           <Ionicons
             name="folder-outline"
@@ -265,12 +280,15 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  sessionEmail: { maxWidth: 120 },
   searchRow: { paddingHorizontal: 16, paddingTop: 12, position: 'relative', justifyContent: 'center' },
   searchIcon: { position: 'absolute', left: 28, top: 24, zIndex: 1 },
   searchInput: { borderWidth: 1, paddingVertical: 10, paddingLeft: 36, paddingRight: 36, fontSize: 14 },
   clearButton: { position: 'absolute', right: 28, top: 22 },
   filterRow: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12 },
   favoriteChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, paddingVertical: 8, paddingHorizontal: 14 },
+  categoryList: { flexGrow: 0 },
   categoryRow: { paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
   categoryChip: { borderWidth: 1, paddingVertical: 6, paddingHorizontal: 14 },
   list: { paddingHorizontal: 16, paddingBottom: 96, gap: 12 },
@@ -282,7 +300,7 @@ const styles = StyleSheet.create({
   fab: { position: 'absolute', bottom: 88, right: 20, width: 56, height: 56, alignItems: 'center', justifyContent: 'center' },
   toast: {
     position: 'absolute',
-    top: 60,
+    top: 180,
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',

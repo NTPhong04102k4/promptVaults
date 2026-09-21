@@ -18,10 +18,13 @@ export function PromptCard({ prompt, onToggleFavorite, onEdit, onDelete, onCopie
   const { theme } = useTheme();
   const [copied, setCopied] = useState(false);
   const isMountedRef = useRef(true);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
     };
   }, []);
 
@@ -30,7 +33,8 @@ export function PromptCard({ prompt, onToggleFavorite, onEdit, onDelete, onCopie
     if (!isMountedRef.current) return;
     setCopied(true);
     onCopied();
-    setTimeout(() => {
+    if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = setTimeout(() => {
       if (isMountedRef.current) setCopied(false);
     }, 2000);
   }
