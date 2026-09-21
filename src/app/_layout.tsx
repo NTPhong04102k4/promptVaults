@@ -10,20 +10,21 @@ export default function RootLayout() {
   const [locked, setLocked] = useState(false);
   const appState = useRef<AppStateStatus>(AppState.currentState);
 
-  async function checkLock() {
-    const enabled = await isAppLockEnabled();
-    setLocked(enabled);
-    setChecked(true);
+  function checkLock() {
+    isAppLockEnabled().then((enabled) => {
+      setLocked(enabled);
+      setChecked(true);
+    });
   }
 
   useEffect(() => {
-    checkLock();
     const subscription = AppState.addEventListener('change', (next) => {
       if (appState.current.match(/inactive|background/) && next === 'active' && !isOAuthInProgress()) {
         checkLock();
       }
       appState.current = next;
     });
+    checkLock();
     return () => subscription.remove();
   }, []);
 
