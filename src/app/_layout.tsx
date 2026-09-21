@@ -4,27 +4,42 @@ import { Stack } from 'expo-router';
 import { isAppLockEnabled } from '@/lib/appLock';
 import { authenticateWithBiometric } from '@/lib/biometric';
 import { isOAuthInProgress } from '@/lib/oauthState';
+import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
 
-export default function RootLayout() {
+function LockScreen({ onUnlock }: { onUnlock: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <Text style={[styles.title, { color: theme.colors.text }]}>PromptVault đã khoá</Text>
+      <Pressable
+        style={[styles.button, { backgroundColor: theme.colors.primary, borderRadius: theme.spacing.radius.md }]}
+        onPress={onUnlock}
+      >
+        <Text style={styles.buttonText}>Mở khoá</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function RootNavigator() {
   const [checked, setChecked] = useState(false);
   const [locked, setLocked] = useState(false);
   const appState = useRef<AppStateStatus>(AppState.currentState);
 
-  function checkLock() {
-    isAppLockEnabled().then((enabled) => {
-      setLocked(enabled);
-      setChecked(true);
-    });
+  async function checkLock() {
+    const enabled = await isAppLockEnabled();
+    setLocked(enabled);
+    setChecked(true);
   }
 
   useEffect(() => {
+    checkLock();
     const subscription = AppState.addEventListener('change', (next) => {
       if (appState.current.match(/inactive|background/) && next === 'active' && !isOAuthInProgress()) {
         checkLock();
       }
       appState.current = next;
     });
-    checkLock();
     return () => subscription.remove();
   }, []);
 
@@ -36,22 +51,23 @@ export default function RootLayout() {
   if (!checked) return null;
 
   if (locked) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.title}>PromptVault đã khoá</Text>
-        <Pressable style={styles.button} onPress={handleUnlock}>
-          <Text style={styles.buttonText}>Mở khoá</Text>
-        </Pressable>
-      </View>
-    );
+    return <LockScreen onUnlock={handleUnlock} />;
   }
 
   return <Stack />;
 }
 
+export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <RootNavigator />
+    </ThemeProvider>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
   title: { fontSize: 20, fontWeight: '600' },
-  button: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14 },
+  button: { padding: 14 },
   buttonText: { color: '#fff', fontWeight: '600' },
 });
