@@ -1,17 +1,11 @@
-import { useEffect, useState } from 'react';
 import { StyleSheet, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import type { Session } from '@supabase/supabase-js';
-import { getSession, onAuthStateChange, signOut } from '@/lib/auth';
+import { signOut } from '@/lib/auth';
+import { useSessionStore } from '@/store/sessionStore';
 import { ThemedView, ThemedText } from '@/components/Themed';
 
 export default function Index() {
-  const [session, setSession] = useState<Session | null>(null);
-
-  useEffect(() => {
-    getSession().then(setSession);
-    return onAuthStateChange(setSession);
-  }, []);
+  const session = useSessionStore((s) => s.session);
 
   return (
     <ThemedView style={styles.container}>

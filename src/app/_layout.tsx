@@ -4,6 +4,8 @@ import { Stack } from 'expo-router';
 import { isAppLockEnabled } from '@/lib/appLock';
 import { authenticateWithBiometric } from '@/lib/biometric';
 import { isOAuthInProgress } from '@/lib/oauthState';
+import { getSession, onAuthStateChange } from '@/lib/auth';
+import { useSessionStore } from '@/store/sessionStore';
 import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
 
 function LockScreen({ onUnlock }: { onUnlock: () => void }) {
@@ -25,6 +27,7 @@ function RootNavigator() {
   const [checked, setChecked] = useState(false);
   const [locked, setLocked] = useState(false);
   const appState = useRef<AppStateStatus>(AppState.currentState);
+  const setSession = useSessionStore((s) => s.setSession);
 
   async function checkLock() {
     const enabled = await isAppLockEnabled();
@@ -42,6 +45,11 @@ function RootNavigator() {
     });
     return () => subscription.remove();
   }, []);
+
+  useEffect(() => {
+    getSession().then(setSession);
+    return onAuthStateChange(setSession);
+  }, [setSession]);
 
   async function handleUnlock() {
     const success = await authenticateWithBiometric();
