@@ -26,7 +26,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setThemePreference(next);
   }
 
-  const colorScheme = resolveScheme(preference, systemScheme);
+  const colorScheme = resolveScheme(preference, systemScheme === 'unspecified' ? undefined : systemScheme);
   const theme = colorScheme === 'dark' ? darkTheme : lightTheme;
 
   return (
