@@ -18,12 +18,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [preference, setPreferenceState] = useState<ThemePreference>('system');
 
   useEffect(() => {
-    getThemePreference().then(setPreferenceState);
+    getThemePreference()
+      .then(setPreferenceState)
+      .catch(() => setPreferenceState('system'));
   }, []);
 
   function setPreference(next: ThemePreference) {
     setPreferenceState(next);
-    setThemePreference(next);
+    setThemePreference(next).catch(() => {});
   }
 
   const colorScheme = resolveScheme(preference, systemScheme === 'unspecified' ? undefined : systemScheme);

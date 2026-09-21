@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { View, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { signInWithEmail, signUpWithEmail, signInWithGoogle } from '@/lib/auth';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -118,7 +118,7 @@ export default function AuthScreen() {
       />
 
       {error && (
-        <ThemedText color="error" style={styles.error}>
+        <ThemedText color="error">
           {error}
         </ThemedText>
       )}
@@ -163,7 +163,6 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, padding: 12 },
   button: { padding: 14, alignItems: 'center' },
   buttonText: { color: '#fff', fontWeight: '600' },
-  error: {},
   switchText: { textAlign: 'center', marginTop: 8 },
   googleButton: { borderWidth: 1, padding: 14, alignItems: 'center', marginTop: 8 },
   googleButtonText: { fontWeight: '600' },

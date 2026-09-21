@@ -14,3 +14,4 @@ export const darkTheme: Theme = { colors: darkColors, typography, spacing };
 export type { ColorTokens } from './colors';
 export type { TypographyRole, TypographyTokens } from './typography';
 export type { SpacingTokens } from './spacing';
+export type { ThemePreference } from './resolveScheme';

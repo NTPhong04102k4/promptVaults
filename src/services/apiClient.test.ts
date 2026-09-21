@@ -12,7 +12,7 @@ describe('apiClient', () => {
     globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ id: 1, name: 'test' }),
+      text: async () => JSON.stringify({ id: 1, name: 'test' }),
     }) as unknown as typeof fetch;
 
     const result = await apiClient.get<{ id: number; name: string }>('https://example.com/items/1');
@@ -28,7 +28,7 @@ describe('apiClient', () => {
     globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 201,
-      json: async () => ({ created: true }),
+      text: async () => JSON.stringify({ created: true }),
     }) as unknown as typeof fetch;
 
     await apiClient.post('https://example.com/items', { name: 'new' });
@@ -71,6 +71,18 @@ describe('apiClient', () => {
       status: 500,
       message: 'Internal Server Error',
     });
+  });
+
+  it('resolves to undefined for a 204 No Content response instead of throwing', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      text: async () => '',
+    }) as unknown as typeof fetch;
+
+    const result = await apiClient.delete('https://example.com/items/1');
+
+    expect(result).toBeUndefined();
   });
 
   it('exposes ApiError as the rejected error type', async () => {
