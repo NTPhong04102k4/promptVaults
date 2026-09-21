@@ -1,9 +1,12 @@
 import { useState } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import { pushLocalPromptsToCloud, pullCloudPromptsToLocal } from '@/lib/sync';
+import { useTheme } from '@/theme/ThemeProvider';
+import { ThemedView, ThemedText } from '@/components/Themed';
 
 export default function SyncScreen() {
+  const { theme } = useTheme();
   const [status, setStatus] = useState<'idle' | 'syncing' | 'done'>('idle');
   const [result, setResult] = useState<{ synced: number; failed: number; pulled: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -24,42 +27,54 @@ export default function SyncScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Đồng bộ dữ liệu?</Text>
-      <Text style={styles.subtitle}>
+    <ThemedView style={styles.container}>
+      <ThemedText variant="h2" style={styles.title}>
+        Đồng bộ dữ liệu?
+      </ThemedText>
+      <ThemedText color="secondary" style={styles.subtitle}>
         Đồng bộ prompt giữa máy này và tài khoản của bạn — đẩy prompt mới trên máy lên, và tải về prompt đã lưu từ thiết bị khác.
-      </Text>
+      </ThemedText>
 
-      {error && <Text style={styles.error}>{error}</Text>}
-
-      {status === 'done' && result && (
-        <Text style={styles.resultText}>
-          Đã gửi {result.synced} prompt{result.failed > 0 ? `, ${result.failed} lỗi` : ''}, tải về {result.pulled} prompt.
-        </Text>
+      {error && (
+        <ThemedText color="error" style={styles.error}>
+          {error}
+        </ThemedText>
       )}
 
-      <Pressable style={styles.primaryButton} onPress={handleSync} disabled={status === 'syncing'}>
+      {status === 'done' && result && (
+        <ThemedText color="primary" style={styles.resultText}>
+          Đã gửi {result.synced} prompt{result.failed > 0 ? `, ${result.failed} lỗi` : ''}, tải về {result.pulled} prompt.
+        </ThemedText>
+      )}
+
+      <Pressable
+        style={[styles.primaryButton, { backgroundColor: theme.colors.primary, borderRadius: theme.spacing.radius.md }]}
+        onPress={handleSync}
+        disabled={status === 'syncing'}
+      >
         {status === 'syncing' ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.primaryButtonText}>Đồng bộ ngay</Text>
+          <ThemedText style={styles.primaryButtonText}>Đồng bộ ngay</ThemedText>
         )}
       </Pressable>
 
       <Pressable onPress={() => router.replace('/')}>
-        <Text style={styles.secondaryText}>Để sau</Text>
+        <ThemedText color="primary" style={styles.secondaryText}>
+          Để sau
+        </ThemedText>
       </Pressable>
-    </View>
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', padding: 24, gap: 16 },
-  title: { fontSize: 24, fontWeight: '700', textAlign: 'center' },
-  subtitle: { fontSize: 16, textAlign: 'center', color: '#555' },
-  error: { color: '#D14343', textAlign: 'center' },
-  resultText: { textAlign: 'center', color: '#208AEF' },
-  primaryButton: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
+  title: { textAlign: 'center' },
+  subtitle: { textAlign: 'center' },
+  error: { textAlign: 'center' },
+  resultText: { textAlign: 'center' },
+  primaryButton: { padding: 14, alignItems: 'center' },
   primaryButtonText: { color: '#fff', fontWeight: '600' },
-  secondaryText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
+  secondaryText: { textAlign: 'center', marginTop: 8 },
 });
