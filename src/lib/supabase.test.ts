@@ -36,6 +36,6 @@ describe('supabase client', () => {
     // supabase-js stores its config internally; verify indirectly via the
     // GoTrueClient instance's storage reference, which supabase-js exposes
     // on `supabase.auth` as `storage` in v2.
-    expect((supabase.auth as any).storage).toBe(LargeSecureStore)
+    expect(supabase.auth.storage).toBe(LargeSecureStore)
   })
 })

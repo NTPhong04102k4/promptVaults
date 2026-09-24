@@ -3,6 +3,9 @@ jest.mock('./supabase', () => ({
     auth: {
       signUp: jest.fn(),
       signInWithPassword: jest.fn(),
+      verifyOtp: jest.fn(),
+      resend: jest.fn(),
+      resetPasswordForEmail: jest.fn(),
       getSession: jest.fn(),
       onAuthStateChange: jest.fn(),
     },
@@ -19,7 +22,15 @@ jest.mock('expo-linking', () => ({
 
 import * as WebBrowser from 'expo-web-browser'
 
-import { signInWithEmail, signInWithGoogle, signOut, signUpWithEmail } from './auth'
+import {
+  resendSignupCode,
+  sendPasswordReset,
+  signInWithEmail,
+  signInWithGoogle,
+  signOut,
+  signUpWithEmail,
+  verifySignupCode,
+} from './auth'
 import { supabase } from './supabase'
 
 describe('signUpWithEmail', () => {
@@ -48,6 +59,40 @@ describe('signUpWithEmail', () => {
         },
       },
     })
+  })
+
+  it('reports that email verification is needed when no session is returned', async () => {
+    ;(supabase.auth.signUp as jest.Mock).mockResolvedValue({
+      data: { user: { id: 'user-1' }, session: null },
+      error: null,
+    })
+
+    const result = await signUpWithEmail({
+      email: 'a@b.com',
+      password: 'secret123',
+      firstName: 'An',
+      lastName: 'Nguyen',
+      username: 'annguyen',
+    })
+
+    expect(result).toEqual({ needsVerification: true })
+  })
+
+  it('reports no verification needed when a session is returned', async () => {
+    ;(supabase.auth.signUp as jest.Mock).mockResolvedValue({
+      data: { user: { id: 'user-1' }, session: { access_token: 'x' } },
+      error: null,
+    })
+
+    const result = await signUpWithEmail({
+      email: 'a@b.com',
+      password: 'secret123',
+      firstName: 'An',
+      lastName: 'Nguyen',
+      username: 'annguyen',
+    })
+
+    expect(result).toEqual({ needsVerification: false })
   })
 
   it('throws when sign up fails', async () => {
@@ -101,7 +146,7 @@ describe('signInWithGoogle', () => {
       type: 'success',
       url: 'promptvaults://onboarding/sync#access_token=abc&refresh_token=def',
     })
-    ;(supabase.auth as any).setSession = jest.fn().mockResolvedValue({ error: null })
+    supabase.auth.setSession = jest.fn().mockResolvedValue({ error: null })
 
     await signInWithGoogle()
 
@@ -125,7 +170,7 @@ describe('signInWithGoogle', () => {
       error: null,
     })
     ;(WebBrowser.openAuthSessionAsync as jest.Mock).mockResolvedValue({ type: 'cancel' })
-    ;(supabase.auth as any).setSession = jest.fn()
+    supabase.auth.setSession = jest.fn()
 
     await signInWithGoogle()
 
@@ -140,5 +185,57 @@ describe('signOut', () => {
     await signOut()
 
     expect(supabase.auth.signOut).toHaveBeenCalled()
+  })
+})
+
+describe('verifySignupCode', () => {
+  it('verifies the 6-digit signup code for the email', async () => {
+    ;(supabase.auth.verifyOtp as jest.Mock).mockResolvedValue({ error: null })
+
+    await verifySignupCode('a@b.com', '123456')
+
+    expect(supabase.auth.verifyOtp).toHaveBeenCalledWith({
+      email: 'a@b.com',
+      token: '123456',
+      type: 'signup',
+    })
+  })
+
+  it('throws the error code when the code is wrong or expired', async () => {
+    ;(supabase.auth.verifyOtp as jest.Mock).mockResolvedValue({
+      error: { code: 'otp_expired', message: 'Token has expired or is invalid' },
+    })
+
+    await expect(verifySignupCode('a@b.com', '000000')).rejects.toThrow('otp_expired')
+  })
+})
+
+describe('resendSignupCode', () => {
+  it('asks supabase to resend the signup email', async () => {
+    ;(supabase.auth.resend as jest.Mock).mockResolvedValue({ error: null })
+
+    await resendSignupCode('a@b.com')
+
+    expect(supabase.auth.resend).toHaveBeenCalledWith({ type: 'signup', email: 'a@b.com' })
+  })
+})
+
+describe('sendPasswordReset', () => {
+  it('sends a reset link that deep-links back into the app', async () => {
+    ;(supabase.auth.resetPasswordForEmail as jest.Mock).mockResolvedValue({ error: null })
+
+    await sendPasswordReset('a@b.com')
+
+    expect(supabase.auth.resetPasswordForEmail).toHaveBeenCalledWith('a@b.com', {
+      redirectTo: 'promptvaults://onboarding/sync',
+    })
+  })
+
+  it('throws when supabase rejects the request', async () => {
+    ;(supabase.auth.resetPasswordForEmail as jest.Mock).mockResolvedValue({
+      error: { code: 'over_email_send_rate_limit', message: 'rate limited' },
+    })
+
+    await expect(sendPasswordReset('a@b.com')).rejects.toThrow('over_email_send_rate_limit')
   })
 })

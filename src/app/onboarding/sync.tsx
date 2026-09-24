@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
-import { router } from 'expo-router'
 
 import { pullCloudPromptsToLocal, pushLocalPromptsToCloud } from '@/lib/sync'
+import { resetTo } from '@/navigation'
 
 export default function SyncScreen() {
   const [status, setStatus] = useState<'idle' | 'syncing' | 'done'>('idle')
@@ -51,7 +51,7 @@ export default function SyncScreen() {
         )}
       </Pressable>
 
-      <Pressable onPress={() => router.replace('/')}>
+      <Pressable onPress={() => resetTo('home')}>
         <Text style={styles.secondaryText}>Để sau</Text>
       </Pressable>
     </View>

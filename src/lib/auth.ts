@@ -18,8 +18,13 @@ export type SignInInput = {
   password: string
 }
 
-export async function signUpWithEmail(input: SignUpInput): Promise<void> {
-  const { error } = await supabase.auth.signUp({
+export type SignUpResult = {
+  // true when the project requires email confirmation (no session until the code is verified)
+  needsVerification: boolean
+}
+
+export async function signUpWithEmail(input: SignUpInput): Promise<SignUpResult> {
+  const { data, error } = await supabase.auth.signUp({
     email: input.email,
     password: input.password,
     options: {
@@ -29,6 +34,25 @@ export async function signUpWithEmail(input: SignUpInput): Promise<void> {
         last_name: input.lastName,
       },
     },
+  })
+  if (error) throw new Error(error.code ?? error.message)
+  return { needsVerification: !data.session }
+}
+
+// Requires the Supabase "Confirm signup" email template to include {{ .Token }}.
+export async function verifySignupCode(email: string, token: string): Promise<void> {
+  const { error } = await supabase.auth.verifyOtp({ email, token, type: 'signup' })
+  if (error) throw new Error(error.code ?? error.message)
+}
+
+export async function resendSignupCode(email: string): Promise<void> {
+  const { error } = await supabase.auth.resend({ type: 'signup', email })
+  if (error) throw new Error(error.code ?? error.message)
+}
+
+export async function sendPasswordReset(email: string): Promise<void> {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: Linking.createURL('onboarding/sync'),
   })
   if (error) throw new Error(error.code ?? error.message)
 }

@@ -1,7 +1,11 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native'
-import { router } from 'expo-router'
+
+import { goBack, push } from '@/navigation'
+import { useAuthStore } from '@/store'
 
 export default function WelcomeScreen() {
+  const completeOnboarding = useAuthStore((state) => state.completeOnboarding)
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>PromptVault</Text>
@@ -11,12 +15,20 @@ export default function WelcomeScreen() {
 
       <Pressable
         style={styles.primaryButton}
-        onPress={() => router.push('/onboarding/auth?mode=signup')}
+        onPress={() => {
+          completeOnboarding()
+          push('signup')
+        }}
       >
         <Text style={styles.primaryButtonText}>Đăng ký / Đăng nhập để đồng bộ</Text>
       </Pressable>
 
-      <Pressable onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}>
+      <Pressable
+        onPress={() => {
+          completeOnboarding()
+          goBack('home')
+        }}
+      >
         <Text style={styles.secondaryText}>Dùng ngay, không cần tài khoản</Text>
       </Pressable>
     </View>
