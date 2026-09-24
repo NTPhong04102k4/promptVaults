@@ -2,6 +2,7 @@
   "extends": "expo/tsconfig.base",
   "//": "Strict TS base for the react pack (skillrunner). Have tsconfig.json extend this: { \"extends\": \"./tsconfig.base.json\" }.",
   "compilerOptions": {
+    "types": ["jest"],
     "target": "ES2022",
     "useDefineForClassFields": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],

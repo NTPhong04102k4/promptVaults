@@ -1,0 +1,13 @@
+{
+  "project": "PropmtVaults",
+  "updatedAt": "2026-09-24T09:51:22Z",
+  "skills": {
+    "plan-feature": {
+      "stack": "rn",
+      "count": 1,
+      "firstEmitted": "2026-09-24T09:51:22Z",
+      "lastEmitted": "2026-09-24T09:51:22Z",
+      "lastCommit": "7d95947d893b389dcd133a38dfaff609be396c21"
+    }
+  }
+}
