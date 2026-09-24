@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AppState, type AppStateStatus, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useFonts } from 'expo-font'
-import { SplashScreen, Stack, ThemeProvider } from 'expo-router'
+import { ThemeProvider as NavigationThemeProvider, SplashScreen, Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 
 import { isAppLockEnabled } from '@/lib/appLock'
@@ -9,11 +9,20 @@ import { authenticateWithBiometric } from '@/lib/biometric'
 import { isOAuthInProgress } from '@/lib/oauthState'
 import { toNavigationTheme } from '@/navigation'
 import { startAuthListener, useAuthStore } from '@/store'
-import { fontAssets, type Theme, useTheme } from '@/theme'
+import { fontAssets, type Theme, ThemeProvider, useTheme } from '@/theme'
 
 SplashScreen.preventAutoHideAsync()
 
 export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <RootLayoutContent />
+    </ThemeProvider>
+  )
+}
+
+// Reads `useTheme()`, so it must render inside `<ThemeProvider>` rather than alongside it.
+function RootLayoutContent() {
   const theme = useTheme()
   const [fontsLoaded, fontError] = useFonts(fontAssets)
   const hydrated = useAuthStore((state) => state.hydrated)
@@ -73,7 +82,7 @@ export default function RootLayout() {
   }
 
   return (
-    <ThemeProvider value={toNavigationTheme(theme)}>
+    <NavigationThemeProvider value={toNavigationTheme(theme)}>
       <StatusBar style={theme.dark ? 'light' : 'dark'} />
       <Stack screenOptions={{ headerTitleStyle: theme.typography.titleLarge, headerShown: false }}>
         <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
@@ -103,7 +112,7 @@ export default function RootLayout() {
         <Stack.Screen name="onboarding/forgot-password" />
         <Stack.Screen name="onboarding/sync" options={{ headerShown: true, title: 'Đồng bộ' }} />
       </Stack>
-    </ThemeProvider>
+    </NavigationThemeProvider>
   )
 }
 

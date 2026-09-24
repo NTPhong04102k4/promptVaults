@@ -14,7 +14,6 @@ export const ROUTES = {
   promptDetail: '/prompt-detail',
   promptEdit: '/prompt-edit',
   vaultSwitcher: '/vault-switcher',
-  welcome: '/onboarding/welcome',
   signup: '/onboarding/signup',
   login: '/onboarding/login',
   verifyEmail: '/onboarding/verify-email',
