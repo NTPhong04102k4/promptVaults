@@ -1,0 +1,98 @@
+// Material 3 color scheme — SchemeTonalSpot, seed #006A6A.
+// Source of truth: Figma file WScBdHgDNRtCUhff9detCF, collections "M3 / Color / Light|Dark".
+// Regenerate with @material/material-color-utilities if the seed changes; keep Figma in sync.
+
+export const seedColor = '#006A6A'
+
+export const lightColors = {
+  primary: '#006A6A',
+  onPrimary: '#FFFFFF',
+  primaryContainer: '#9CF1F0',
+  onPrimaryContainer: '#004F4F',
+  secondary: '#4A6363',
+  onSecondary: '#FFFFFF',
+  secondaryContainer: '#CCE8E7',
+  onSecondaryContainer: '#324B4B',
+  tertiary: '#4B607C',
+  onTertiary: '#FFFFFF',
+  tertiaryContainer: '#D3E4FF',
+  onTertiaryContainer: '#334863',
+  error: '#BA1A1A',
+  onError: '#FFFFFF',
+  errorContainer: '#FFDAD6',
+  onErrorContainer: '#93000A',
+  background: '#F4FBFA',
+  onBackground: '#161D1D',
+  surface: '#F4FBFA',
+  onSurface: '#161D1D',
+  surfaceVariant: '#DAE5E4',
+  onSurfaceVariant: '#3F4948',
+  surfaceDim: '#D5DBDA',
+  surfaceBright: '#F4FBFA',
+  surfaceContainerLowest: '#FFFFFF',
+  surfaceContainerLow: '#EFF5F4',
+  surfaceContainer: '#E9EFEE',
+  surfaceContainerHigh: '#E3E9E9',
+  surfaceContainerHighest: '#DDE4E3',
+  outline: '#6F7979',
+  outlineVariant: '#BEC9C8',
+  shadow: '#000000',
+  scrim: '#000000',
+  inverseSurface: '#2B3231',
+  inverseOnSurface: '#ECF2F1',
+  inversePrimary: '#80D5D4',
+  surfaceTint: '#006A6A',
+} as const
+
+export type ColorRole = keyof typeof lightColors
+export type ColorScheme = Record<ColorRole, string>
+
+export const darkColors: ColorScheme = {
+  primary: '#80D5D4',
+  onPrimary: '#003737',
+  primaryContainer: '#004F4F',
+  onPrimaryContainer: '#9CF1F0',
+  secondary: '#B0CCCB',
+  onSecondary: '#1B3534',
+  secondaryContainer: '#324B4B',
+  onSecondaryContainer: '#CCE8E7',
+  tertiary: '#B3C8E8',
+  onTertiary: '#1C314B',
+  tertiaryContainer: '#334863',
+  onTertiaryContainer: '#D3E4FF',
+  error: '#FFB4AB',
+  onError: '#690005',
+  errorContainer: '#93000A',
+  onErrorContainer: '#FFDAD6',
+  background: '#0E1514',
+  onBackground: '#DDE4E3',
+  surface: '#0E1514',
+  onSurface: '#DDE4E3',
+  surfaceVariant: '#3F4948',
+  onSurfaceVariant: '#BEC9C8',
+  surfaceDim: '#0E1514',
+  surfaceBright: '#343A3A',
+  surfaceContainerLowest: '#090F0F',
+  surfaceContainerLow: '#161D1D',
+  surfaceContainer: '#1A2121',
+  surfaceContainerHigh: '#252B2B',
+  surfaceContainerHighest: '#2F3636',
+  outline: '#889392',
+  outlineVariant: '#3F4948',
+  shadow: '#000000',
+  scrim: '#000000',
+  inverseSurface: '#DDE4E3',
+  inverseOnSurface: '#2B3231',
+  inversePrimary: '#006A6A',
+  surfaceTint: '#80D5D4',
+}
+
+// M3 state layer opacities, applied on top of the container color.
+export const stateLayerOpacity = {
+  hover: 0.08,
+  focus: 0.1,
+  pressed: 0.1,
+  dragged: 0.16,
+  disabledContent: 0.38,
+  disabledContainer: 0.12,
+} as const
