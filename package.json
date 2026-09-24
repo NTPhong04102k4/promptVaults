@@ -42,8 +42,11 @@
     "better-sqlite3": "^13.0.3",
     "eslint": "^9.39.5",
     "eslint-config-expo": "~57.0.2",
+    "eslint-config-prettier": "^10.1.8",
     "jest": "~29.7.0",
     "jest-expo": "~57.0.5",
+    "neostandard": "^0.13.0",
+    "prettier": "^3.9.9",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -53,6 +56,9 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "jest",
     "kill-8081": "for /f \"tokens=5\" %a in ('netstat -a -o -n ^| findstr :8081') do taskkill /F /PID %a"
   },

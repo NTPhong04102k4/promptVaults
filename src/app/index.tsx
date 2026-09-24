@@ -1,16 +1,17 @@
-import { useEffect, useState } from 'react';
-import { Text, View, StyleSheet, Pressable } from 'react-native';
-import { router } from 'expo-router';
-import type { Session } from '@supabase/supabase-js';
-import { getSession, onAuthStateChange, signOut } from '@/lib/auth';
+import { useEffect, useState } from 'react'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { router } from 'expo-router'
+import type { Session } from '@supabase/supabase-js'
+
+import { getSession, onAuthStateChange, signOut } from '@/lib/auth'
 
 export default function Index() {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<Session | null>(null)
 
   useEffect(() => {
-    getSession().then(setSession);
-    return onAuthStateChange(setSession);
-  }, []);
+    getSession().then(setSession)
+    return onAuthStateChange(setSession)
+  }, [])
 
   return (
     <View style={styles.container}>
@@ -32,7 +33,7 @@ export default function Index() {
         </Pressable>
       )}
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -44,4 +45,4 @@ const styles = StyleSheet.create({
   },
   accountRow: { padding: 12 },
   accountText: { color: '#208AEF' },
-});
+})

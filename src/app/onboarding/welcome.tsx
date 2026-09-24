@@ -1,5 +1,5 @@
-import { View, Text, Pressable, StyleSheet } from 'react-native';
-import { router } from 'expo-router';
+import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { router } from 'expo-router'
 
 export default function WelcomeScreen() {
   return (
@@ -9,7 +9,10 @@ export default function WelcomeScreen() {
         Lưu trữ gọn gàng – Tìm kiếm thần tốc – Copy 1 chạm cho content creator.
       </Text>
 
-      <Pressable style={styles.primaryButton} onPress={() => router.push('/onboarding/auth?mode=signup')}>
+      <Pressable
+        style={styles.primaryButton}
+        onPress={() => router.push('/onboarding/auth?mode=signup')}
+      >
         <Text style={styles.primaryButtonText}>Đăng ký / Đăng nhập để đồng bộ</Text>
       </Pressable>
 
@@ -17,7 +20,7 @@ export default function WelcomeScreen() {
         <Text style={styles.secondaryText}>Dùng ngay, không cần tài khoản</Text>
       </Pressable>
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -27,4 +30,4 @@ const styles = StyleSheet.create({
   primaryButton: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
   primaryButtonText: { color: '#fff', fontWeight: '600' },
   secondaryText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
-});
+})

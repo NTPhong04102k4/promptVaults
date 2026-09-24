@@ -1,0 +1,9 @@
+# Prettier also skips everything in .gitignore (.claude, /docs, /android, /ios, .expo, ...).
+.claude/
+package-lock.json
+yarn.lock
+supabase/.temp/
+# Managed by other tools (skillrunner writes a "do not edit" block into CLAUDE.md).
+CLAUDE.md
+AGENTS.md
+skill.json

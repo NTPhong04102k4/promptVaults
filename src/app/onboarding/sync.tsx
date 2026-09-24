@@ -1,25 +1,28 @@
-import { useState } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
-import { router } from 'expo-router';
-import { pushLocalPromptsToCloud, pullCloudPromptsToLocal } from '@/lib/sync';
+import { useState } from 'react'
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
+import { router } from 'expo-router'
+
+import { pullCloudPromptsToLocal, pushLocalPromptsToCloud } from '@/lib/sync'
 
 export default function SyncScreen() {
-  const [status, setStatus] = useState<'idle' | 'syncing' | 'done'>('idle');
-  const [result, setResult] = useState<{ synced: number; failed: number; pulled: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<'idle' | 'syncing' | 'done'>('idle')
+  const [result, setResult] = useState<{ synced: number; failed: number; pulled: number } | null>(
+    null,
+  )
+  const [error, setError] = useState<string | null>(null)
 
   async function handleSync() {
-    setError(null);
-    setResult(null);
-    setStatus('syncing');
+    setError(null)
+    setResult(null)
+    setStatus('syncing')
     try {
-      const pullResult = await pullCloudPromptsToLocal();
-      const pushResult = await pushLocalPromptsToCloud();
-      setResult({ ...pushResult, pulled: pullResult.pulled });
-      setStatus('done');
+      const pullResult = await pullCloudPromptsToLocal()
+      const pushResult = await pushLocalPromptsToCloud()
+      setResult({ ...pushResult, pulled: pullResult.pulled })
+      setStatus('done')
     } catch {
-      setError('Đồng bộ thất bại, thử lại sau.');
-      setStatus('idle');
+      setError('Đồng bộ thất bại, thử lại sau.')
+      setStatus('idle')
     }
   }
 
@@ -27,14 +30,16 @@ export default function SyncScreen() {
     <View style={styles.container}>
       <Text style={styles.title}>Đồng bộ dữ liệu?</Text>
       <Text style={styles.subtitle}>
-        Đồng bộ prompt giữa máy này và tài khoản của bạn — đẩy prompt mới trên máy lên, và tải về prompt đã lưu từ thiết bị khác.
+        Đồng bộ prompt giữa máy này và tài khoản của bạn — đẩy prompt mới trên máy lên, và tải về
+        prompt đã lưu từ thiết bị khác.
       </Text>
 
       {error && <Text style={styles.error}>{error}</Text>}
 
       {status === 'done' && result && (
         <Text style={styles.resultText}>
-          Đã gửi {result.synced} prompt{result.failed > 0 ? `, ${result.failed} lỗi` : ''}, tải về {result.pulled} prompt.
+          Đã gửi {result.synced} prompt{result.failed > 0 ? `, ${result.failed} lỗi` : ''}, tải về{' '}
+          {result.pulled} prompt.
         </Text>
       )}
 
@@ -50,7 +55,7 @@ export default function SyncScreen() {
         <Text style={styles.secondaryText}>Để sau</Text>
       </Pressable>
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -62,4 +67,4 @@ const styles = StyleSheet.create({
   primaryButton: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
   primaryButtonText: { color: '#fff', fontWeight: '600' },
   secondaryText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
-});
+})

@@ -1,36 +1,36 @@
 // Mock expo-sqlite for testing
-const Database = require('better-sqlite3');
+const Database = require('better-sqlite3')
 
-const databases = {};
+const databases = {}
 
 class MockSQLiteDatabase {
   constructor(db) {
-    this.db = db;
+    this.db = db
   }
 
   async execAsync(sql) {
     // better-sqlite3 executes multi-statement SQL directly
-    this.db.exec(sql);
+    this.db.exec(sql)
   }
 
   async runAsync(sql, ...params) {
-    const stmt = this.db.prepare(sql);
-    stmt.run(...params);
+    const stmt = this.db.prepare(sql)
+    stmt.run(...params)
   }
 
   async getFirstAsync(sql, ...params) {
-    const stmt = this.db.prepare(sql);
-    return stmt.get(...params) || null;
+    const stmt = this.db.prepare(sql)
+    return stmt.get(...params) || null
   }
 
   async getAllAsync(sql, ...params) {
-    const stmt = this.db.prepare(sql);
-    return stmt.all(...params);
+    const stmt = this.db.prepare(sql)
+    return stmt.all(...params)
   }
 
   close() {
     if (this.db) {
-      this.db.close();
+      this.db.close()
     }
   }
 }
@@ -38,13 +38,13 @@ class MockSQLiteDatabase {
 async function openDatabaseAsync(dbName) {
   // Use in-memory database; memoize by dbName to match db.ts's single-open-per-process pattern
   if (!databases[dbName]) {
-    const sqliteDb = new Database(':memory:');
-    databases[dbName] = new MockSQLiteDatabase(sqliteDb);
+    const sqliteDb = new Database(':memory:')
+    databases[dbName] = new MockSQLiteDatabase(sqliteDb)
   }
-  return databases[dbName];
+  return databases[dbName]
 }
 
 module.exports = {
   openDatabaseAsync,
   SQLiteDatabase: MockSQLiteDatabase,
-};
+}

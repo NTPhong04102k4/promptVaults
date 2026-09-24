@@ -1,25 +1,25 @@
-import * as SQLite from 'expo-sqlite';
+import * as SQLite from 'expo-sqlite'
 
-export const PERSONAL_VAULT_ID = '00000000-0000-4000-8000-000000000001';
+export const PERSONAL_VAULT_ID = '00000000-0000-4000-8000-000000000001'
 
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 1
 
-let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null
 
 export function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
     dbPromise = SQLite.openDatabaseAsync('promptvaults.db').then(async (db) => {
-      await migrate(db);
-      return db;
-    });
+      await migrate(db)
+      return db
+    })
   }
-  return dbPromise;
+  return dbPromise
 }
 
 async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
-  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
-  const currentVersion = row?.user_version ?? 0;
-  if (currentVersion >= DATABASE_VERSION) return;
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version')
+  const currentVersion = row?.user_version ?? 0
+  if (currentVersion >= DATABASE_VERSION) return
 
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
@@ -65,15 +65,15 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
       INSERT INTO prompts_fts(rowid, title, content, category, tags)
       VALUES (new.rowid, new.title, new.content, new.category, new.tags);
     END;
-  `);
+  `)
 
   await db.runAsync(
     'INSERT OR IGNORE INTO vaults (id, name, type, created_at) VALUES (?, ?, ?, ?)',
     PERSONAL_VAULT_ID,
     'Kho cá nhân',
     'personal',
-    Date.now()
-  );
+    Date.now(),
+  )
 
-  await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
+  await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`)
 }
