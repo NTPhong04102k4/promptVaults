@@ -95,4 +95,69 @@ describe('apiClient', () => {
 
     await expect(apiClient.put('https://example.com/items/1', {})).rejects.toBeInstanceOf(ApiError);
   });
+
+  it('unwraps an OperationResult envelope and returns data', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ success: true, message: 'ok', data: { id: 7 } }),
+    }) as unknown as typeof fetch;
+
+    await expect(apiClient.get('https://example.com/account/me')).resolves.toEqual({ id: 7 });
+  });
+
+  it('returns the raw body when envelope is false', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_in: 900 }),
+    }) as unknown as typeof fetch;
+
+    await expect(
+      apiClient.post('https://example.com/auth/login', {}, { envelope: false })
+    ).resolves.toEqual({ access_token: 'a', refresh_token: 'r', expires_in: 900 });
+  });
+
+  it('exposes the backend errorCode on ApiError', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      statusText: 'Conflict',
+      json: async () => ({
+        success: false,
+        errorCode: 'EmailExists',
+        message: 'Email nay da duoc su dung.',
+      }),
+    }) as unknown as typeof fetch;
+
+    await expect(apiClient.post('https://example.com/auth/register', {})).rejects.toMatchObject({
+      status: 409,
+      code: 'EmailExists',
+      message: 'Email nay da duoc su dung.',
+    });
+  });
+
+  it('uses http_<status> as the code when the error body has none', async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      statusText: 'Bad Gateway',
+      json: async () => {
+        throw new Error('not json');
+      },
+    }) as unknown as typeof fetch;
+
+    await expect(apiClient.get('https://example.com/x')).rejects.toMatchObject({ code: 'http_502' });
+  });
+
+  it('maps a fetch failure to a network ApiError', async () => {
+    globalThis.fetch = jest.fn().mockRejectedValue(
+      new TypeError('Network request failed')
+    ) as unknown as typeof fetch;
+
+    await expect(apiClient.get('https://example.com/x')).rejects.toMatchObject({
+      status: 0,
+      code: 'network',
+    });
+  });
 });

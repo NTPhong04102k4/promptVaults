@@ -1,53 +1,116 @@
 export class ApiError extends Error {
-  status: number;
+  status: number
+  code: string
 
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
+  constructor(status: number, code: string, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
   }
 }
 
-const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
+export type RequestOptions = {
+  // Unwrap AioKin's OperationResult envelope (default true). Pass false for the raw
+  // endpoints: /auth/login, /auth/refresh-token, /auth/biometric/challenge.
+  envelope?: boolean
+  // Attach the bearer token and refresh it on 401 (Task 3).
+  auth?: boolean
+  headers?: Record<string, string>
+}
+
+type Envelope = {
+  success: boolean
+  errorCode?: string | null
+  message?: string | null
+  data?: unknown
+}
+
+const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? ''
 
 function resolveUrl(path: string): string {
-  if (/^https?:\/\//.test(path)) return path;
-  return `${BASE_URL}${path}`;
+  if (/^https?:\/\//.test(path)) return path
+  return `${BASE_URL}${path}`
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
-  if (init.body !== undefined && !headers['Content-Type']) {
-    headers['Content-Type'] = 'application/json';
+function isEnvelope(value: unknown): value is Envelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { success?: unknown }).success === 'boolean'
+  )
+}
+
+export async function rawFetch(
+  method: string,
+  path: string,
+  body: unknown,
+  headers: Record<string, string>,
+): Promise<Response> {
+  const finalHeaders: Record<string, string> = { ...headers }
+  if (body !== undefined && !finalHeaders['Content-Type']) {
+    finalHeaders['Content-Type'] = 'application/json'
   }
+  try {
+    return await fetch(resolveUrl(path), {
+      method,
+      headers: finalHeaders,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+  } catch {
+    throw new ApiError(0, 'network', 'Không có kết nối mạng.')
+  }
+}
 
-  const response = await fetch(resolveUrl(path), { ...init, headers });
+export async function toApiError(response: Response): Promise<ApiError> {
+  let code = `http_${response.status}`
+  let message = response.statusText
+  try {
+    const body = await response.json()
+    if (body && typeof body.errorCode === 'string') code = body.errorCode
+    if (body && typeof body.message === 'string') message = body.message
+  } catch {
+    // no JSON body — keep http_<status> / statusText
+  }
+  return new ApiError(response.status, code, message)
+}
 
-  if (!response.ok) {
-    let message = response.statusText;
-    try {
-      const body = await response.json();
-      if (body && typeof body.message === 'string') message = body.message;
-    } catch {
-      // response had no JSON body — keep statusText
+export async function parseBody<T>(response: Response, envelope: boolean): Promise<T> {
+  if (response.status === 204) return undefined as T
+  const text = await response.text()
+  const body: unknown = text ? JSON.parse(text) : undefined
+  if (envelope && isEnvelope(body)) {
+    if (!body.success) {
+      throw new ApiError(
+        response.status,
+        body.errorCode ?? 'operation_failed',
+        body.message ?? 'Operation failed',
+      )
     }
-    throw new ApiError(response.status, message);
+    return body.data as T
   }
-
-  if (response.status === 204) return undefined as T;
-  const text = await response.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+  return body as T
 }
 
-function withBody(body: unknown): { body: string } | Record<string, never> {
-  return body !== undefined ? { body: JSON.stringify(body) } : {}
+async function request<T>(
+  method: string,
+  path: string,
+  body: unknown,
+  options: RequestOptions = {},
+): Promise<T> {
+  const response = await rawFetch(method, path, body, options.headers ?? {})
+  if (!response.ok) throw await toApiError(response)
+  return parseBody<T>(response, options.envelope ?? true)
 }
 
 export const apiClient = {
-  get: <T>(path: string, init?: RequestInit) => request<T>(path, { ...init, method: 'GET' }),
-  post: <T>(path: string, body?: unknown, init?: RequestInit) =>
-    request<T>(path, { ...init, ...withBody(body), method: 'POST' }),
-  put: <T>(path: string, body?: unknown, init?: RequestInit) =>
-    request<T>(path, { ...init, ...withBody(body), method: 'PUT' }),
-  delete: <T>(path: string, init?: RequestInit) => request<T>(path, { ...init, method: 'DELETE' }),
+  get: <T>(path: string, options?: RequestOptions) => request<T>('GET', path, undefined, options),
+  post: <T>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>('POST', path, body, options),
+  put: <T>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>('PUT', path, body, options),
+  patch: <T>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>('PATCH', path, body, options),
+  delete: <T>(path: string, options?: RequestOptions) =>
+    request<T>('DELETE', path, undefined, options),
 }
