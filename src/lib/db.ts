@@ -10,10 +10,18 @@ let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null
 
 export function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
-    dbPromise = SQLite.openDatabaseAsync('promptvaults.db').then(async (db) => {
+    const promise: Promise<SQLite.SQLiteDatabase> = SQLite.openDatabaseAsync(
+      'promptvaults.db',
+    ).then(async (db) => {
       await migrate(db)
       return db
     })
+    // If migration fails, don't cache the rejection forever — clear it so the next getDb()
+    // call retries instead of every future call rejecting until the app is reinstalled.
+    promise.catch(() => {
+      if (dbPromise === promise) dbPromise = null
+    })
+    dbPromise = promise
   }
   return dbPromise
 }
@@ -38,8 +46,6 @@ const FTS_TRIGGERS = `
 `
 
 const MIGRATION_V1 = `
-  PRAGMA journal_mode = WAL;
-
   CREATE TABLE IF NOT EXISTS vaults (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -147,19 +153,30 @@ export async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
   const currentVersion = row?.user_version ?? 0
   if (currentVersion >= DATABASE_VERSION) return
 
+  // journal_mode is a connection/file-level pragma, not page data — SQLite rejects changing
+  // it inside a transaction, so it always runs standalone, before any transactional work.
   if (currentVersion < 1) {
-    await db.execAsync(MIGRATION_V1)
-    await db.runAsync(
-      'INSERT OR IGNORE INTO vaults (id, name, type, created_at) VALUES (?, ?, ?, ?)',
-      LOCAL_SPACE_ID,
-      'Kho cá nhân',
-      'personal',
-      Date.now(),
-    )
+    await db.execAsync('PRAGMA journal_mode = WAL')
   }
 
+  // v1 DDL + seed + v2 ALTER + PRAGMA user_version = 2 all commit in one transaction. Without
+  // this, a fresh install (or a v1 device) that throws/crashes between these steps and the v3
+  // transaction below leaves user_version at 0/1 while `copy_count` has already been added —
+  // every later launch would then re-run `ALTER TABLE prompts ADD COLUMN copy_count` and throw
+  // "duplicate column" forever, wedging getDb() (and local/guest use) until reinstall.
   if (currentVersion < 2) {
-    await db.execAsync('ALTER TABLE prompts ADD COLUMN copy_count INTEGER NOT NULL DEFAULT 0')
+    await db.withTransactionAsync(async () => {
+      await db.execAsync(MIGRATION_V1)
+      await db.runAsync(
+        'INSERT OR IGNORE INTO vaults (id, name, type, created_at) VALUES (?, ?, ?, ?)',
+        LOCAL_SPACE_ID,
+        'Kho cá nhân',
+        'personal',
+        Date.now(),
+      )
+      await db.execAsync('ALTER TABLE prompts ADD COLUMN copy_count INTEGER NOT NULL DEFAULT 0')
+      await db.execAsync('PRAGMA user_version = 2')
+    })
   }
 
   // PRAGMA user_version is set INSIDE the same transaction as the v3 schema rewrite (spec §9:

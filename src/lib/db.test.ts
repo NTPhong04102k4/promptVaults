@@ -86,6 +86,50 @@ describe('getDb (fresh install)', () => {
   })
 })
 
+describe('migrate (atomic failure recovery)', () => {
+  it('survives a v3 rebuild failure on a fresh install: v1/v2 stay committed, a retry finishes the job', async () => {
+    const db = await SQLite.openDatabaseAsync('fresh-install-v3-failure.db')
+    const realExecAsync = db.execAsync.bind(db)
+    const execSpy = jest.spyOn(db, 'execAsync').mockImplementation(async (sql: string) => {
+      // Simulate a crash mid v3 rebuild (app killed, disk full, etc.) — the v1/v2 step above
+      // must already have committed its own transaction, independently of this one.
+      if (sql.includes('CREATE TABLE spaces')) {
+        throw new Error('simulated crash mid v3 rebuild')
+      }
+      return realExecAsync(sql)
+    })
+
+    await expect(migrate(db)).rejects.toThrow('simulated crash mid v3 rebuild')
+
+    const versionAfterFailure = await db.getFirstAsync<{ user_version: number }>(
+      'PRAGMA user_version',
+    )
+    expect(versionAfterFailure?.user_version).toBeLessThanOrEqual(2)
+
+    // The v1 seed and the v2 ALTER survived the failed v3 attempt — a real app would still be
+    // able to read/write local prompts (LOCAL_SPACE_ID always works), not wedged forever.
+    const localVault = await db.getFirstAsync<{ id: string }>(
+      'SELECT id FROM vaults WHERE id = ?',
+      LOCAL_SPACE_ID,
+    )
+    expect(localVault).toEqual({ id: LOCAL_SPACE_ID })
+    const cols = (await db.getAllAsync<{ name: string }>("PRAGMA table_info('prompts')")).map(
+      (c) => c.name,
+    )
+    expect(cols).toContain('copy_count')
+
+    // Without the fix, this second call re-runs `ALTER TABLE prompts ADD COLUMN copy_count`
+    // (since user_version was never advanced past 0/1) and throws "duplicate column" forever.
+    execSpy.mockRestore()
+    await expect(migrate(db)).resolves.toBeUndefined()
+
+    const versionAfterRetry = await db.getFirstAsync<{ user_version: number }>(
+      'PRAGMA user_version',
+    )
+    expect(versionAfterRetry?.user_version).toBe(3)
+  })
+})
+
 describe('migrate v2 → v3', () => {
   it('keeps every prompt, favourite, copy count and full-text search', async () => {
     const db = await SQLite.openDatabaseAsync('upgrade-test.db')
