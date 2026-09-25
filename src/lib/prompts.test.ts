@@ -5,7 +5,7 @@ jest.mock('expo-crypto', () => {
   }
 })
 
-import { LOCAL_SPACE_ID } from './db'
+import { getDb, LOCAL_SPACE_ID } from './db'
 import {
   createPrompt,
   deletePrompt,
@@ -13,6 +13,7 @@ import {
   listPrompts,
   recordCopy,
   setFavorite,
+  setPromptWriteListener,
   updatePrompt,
 } from './prompts'
 
@@ -85,5 +86,48 @@ describe('prompts', () => {
     const searched = await listPrompts(LOCAL_SPACE_ID, { query: 'TikTok' })
     expect(searched.map((p) => p.id)).toContain(marketing.id)
     expect(searched.map((p) => p.id)).not.toContain(content.id)
+  })
+})
+
+describe('prompts in a synced space', () => {
+  const SPACE = 'aaaaaaaa-0000-4000-8000-00000000000a'
+
+  beforeAll(async () => {
+    const db = await getDb()
+    await db.runAsync(
+      "INSERT OR IGNORE INTO spaces (id, kind, name, can_manage, created_at) VALUES (?, 'personal', 'P', 1, 1)",
+      SPACE,
+    )
+  })
+
+  async function outboxFor(promptId: string) {
+    const db = await getDb()
+    return db.getAllAsync<{ operation: string }>(
+      'SELECT operation FROM sync_outbox WHERE prompt_id = ? ORDER BY seq',
+      promptId,
+    )
+  }
+
+  it('create + edit queue one insert and notify the write listener', async () => {
+    const listener = jest.fn()
+    setPromptWriteListener(listener)
+
+    const created = await createPrompt({ spaceId: SPACE, title: 'A', content: 'B', category: null })
+    await updatePrompt(created.id, { title: 'A2', content: 'B2', category: 'Marketing' })
+
+    expect(await outboxFor(created.id)).toEqual([{ operation: 'insert' }])
+    expect(listener).toHaveBeenCalledTimes(2)
+    setPromptWriteListener(null)
+  })
+
+  it('create + delete leaves nothing to push', async () => {
+    const created = await createPrompt({ spaceId: SPACE, title: 'A', content: 'B', category: null })
+    await deletePrompt(created.id)
+    expect(await outboxFor(created.id)).toEqual([])
+  })
+
+  it('local-space writes never touch the outbox', async () => {
+    const created = await createPrompt({ spaceId: LOCAL_SPACE_ID, title: 'A', content: 'B', category: null })
+    expect(await outboxFor(created.id)).toEqual([])
   })
 })
