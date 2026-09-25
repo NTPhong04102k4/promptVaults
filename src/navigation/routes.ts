@@ -19,6 +19,7 @@ export const ROUTES = {
   verifyEmail: '/onboarding/verify-email',
   forgotPassword: '/onboarding/forgot-password',
   sync: '/onboarding/sync',
+  sessions: '/sessions',
 } as const
 
 export type RouteName = keyof typeof ROUTES
@@ -40,4 +41,5 @@ export type RouteParams = {
   verifyEmail: { email: string }
   forgotPassword: { email?: string }
   sync: undefined
+  sessions: undefined
 }

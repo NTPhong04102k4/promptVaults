@@ -36,14 +36,21 @@ export default function ProfileScreen() {
         <SettingsRow icon="settings" label="Đồng bộ" onPress={() => push('sync')} />
         <SettingsRow icon="settings" label="Cài đặt" onPress={() => push('settings')} />
         {user ? (
-          <SettingsRow
-            icon="settings"
-            label="Đăng xuất"
-            onPress={async () => {
-              await signOut()
-              replace('welcome')
-            }}
-          />
+          <>
+            <SettingsRow
+              icon="settings"
+              label="Thiết bị đăng nhập"
+              onPress={() => push('sessions')}
+            />
+            <SettingsRow
+              icon="settings"
+              label="Đăng xuất"
+              onPress={async () => {
+                await signOut()
+                replace('welcome')
+              }}
+            />
+          </>
         ) : (
           <SettingsRow icon="settings" label="Đăng nhập" onPress={() => push('login')} />
         )}

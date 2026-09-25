@@ -111,6 +111,10 @@ function RootLayoutContent() {
         <Stack.Screen name="onboarding/verify-email" />
         <Stack.Screen name="onboarding/forgot-password" />
         <Stack.Screen name="onboarding/sync" options={{ headerShown: true, title: 'Đồng bộ' }} />
+        <Stack.Screen
+          name="sessions"
+          options={{ headerShown: true, title: 'Thiết bị đăng nhập' }}
+        />
       </Stack>
     </NavigationThemeProvider>
   )
