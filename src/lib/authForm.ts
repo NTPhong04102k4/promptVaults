@@ -1,6 +1,8 @@
 // Client-side validation + user-facing messages for the onboarding auth screens.
 
-export const MIN_PASSWORD_LENGTH = 6 // Supabase default minimum
+import { ApiError } from '@/services/apiClient'
+
+export const MIN_PASSWORD_LENGTH = 6 // AioKin LoginRequest/RegisterRequest MinLength(6)
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const USERNAME_PATTERN = /^[a-z0-9_.]{3,30}$/
@@ -32,23 +34,46 @@ export function splitFullName(fullName: string): { firstName: string; lastName: 
 
 export type AuthErrorField = 'email' | 'password' | 'username' | 'code' | 'form'
 
+// Keys are AioKin OperationResult.errorCode values (AuthController / OperationResultHttpExtensions).
 const AUTH_ERRORS: Record<string, { field: AuthErrorField; message: string }> = {
-  user_already_exists: { field: 'email', message: 'Email này đã được đăng ký.' },
-  invalid_credentials: { field: 'password', message: 'Email hoặc mật khẩu không đúng.' },
-  email_not_confirmed: { field: 'form', message: 'Email chưa được xác minh.' },
-  otp_expired: { field: 'code', message: 'Mã không đúng hoặc đã hết hạn.' },
-  over_email_send_rate_limit: {
+  EmailExists: { field: 'email', message: 'Email này đã được đăng ký.' },
+  UsernameExists: { field: 'username', message: 'Username đã được sử dụng.' },
+  InvalidCredentials: { field: 'password', message: 'Thông tin đăng nhập không đúng.' },
+  AccountLocked: {
     field: 'form',
-    message: 'Bạn thao tác quá nhanh, thử lại sau ít phút.',
+    message: 'Tài khoản đang bị khoá tạm thời do nhập sai nhiều lần, thử lại sau ít phút.',
   },
-  weak_password: { field: 'password', message: 'Mật khẩu quá yếu.' },
+  UserInactive: { field: 'form', message: 'Tài khoản đã bị vô hiệu hoá.' },
+  InvalidOtp: { field: 'code', message: 'Mã không đúng hoặc đã hết hạn.' },
+  InvalidTemporaryPassword: { field: 'code', message: 'Mật khẩu tạm không đúng hoặc đã hết hạn.' },
+  RegistrationDataNotFound: {
+    field: 'form',
+    message: 'Phiên đăng ký đã hết hạn, vui lòng đăng ký lại.',
+  },
+  EmailSendFailed: { field: 'form', message: 'Không gửi được email, thử lại sau.' },
+  OtpGenerationFailed: { field: 'form', message: 'Không gửi được email, thử lại sau.' },
+  network: { field: 'form', message: 'Không có kết nối mạng.' },
 }
 
-// Maps a Supabase error code (thrown by src/lib/auth) to the field it belongs to.
+// Codes whose server message is the most useful thing to show.
+const SERVER_MESSAGE_CODES = new Set(['ValidationError', 'Conflict'])
+
+// Fixed Vietnamese fallback for 429s that arrive with no usable server message (ruling P7).
+const TOO_MANY_REQUESTS_FALLBACK = 'Bạn thao tác quá nhanh, thử lại sau ít phút.'
+
 export function toAuthError(error: unknown): { field: AuthErrorField; message: string } {
-  const code = error instanceof Error ? error.message : String(error)
-  if (code.includes('duplicate key') && code.includes('username')) {
-    return { field: 'username', message: 'Username đã được sử dụng.' }
+  if (error instanceof ApiError) {
+    // TooManyRequests (429): prefer the server's message when present, else the fixed
+    // fallback text (ruling P7, spec §13 binding) — not a static AUTH_ERRORS entry.
+    if (error.code === 'TooManyRequests') {
+      return {
+        field: 'form',
+        message: error.message.trim() ? error.message : TOO_MANY_REQUESTS_FALLBACK,
+      }
+    }
+    const known = AUTH_ERRORS[error.code]
+    if (known) return known
+    if (SERVER_MESSAGE_CODES.has(error.code)) return { field: 'form', message: error.message }
   }
-  return AUTH_ERRORS[code] ?? { field: 'form', message: 'Có lỗi xảy ra, thử lại sau.' }
+  return { field: 'form', message: 'Có lỗi xảy ra, thử lại sau.' }
 }
