@@ -85,7 +85,7 @@ function RootLayoutContent() {
     <NavigationThemeProvider value={toNavigationTheme(theme)}>
       <StatusBar style={theme.dark ? 'light' : 'dark'} />
       <Stack screenOptions={{ headerTitleStyle: theme.typography.titleLarge, headerShown: false }}>
-        <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
+        <Stack.Screen name="(drawers)" options={{ headerShown: false }} />
         <Stack.Screen name="prompt-detail" options={{ presentation: 'modal' }} />
         <Stack.Screen
           name="prompt-edit"

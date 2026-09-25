@@ -106,7 +106,10 @@ export default function PromptEditScreen() {
 }
 
 const useStyles = makeStyles(({ colors, typography, shape, spacing }) => ({
-  container: { backgroundColor: colors.surface },
+  container: {
+    backgroundColor: colors.surface,
+    paddingBottom: spacing.xl,
+  },
   content: { padding: spacing.lg, gap: spacing.lg },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { ...text('headlineSmall'), color: colors.onSurface },
