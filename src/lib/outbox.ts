@@ -62,6 +62,13 @@ export async function enqueue(
 // old conflicted rows can never sit at the front of the queue and starve newer, unrelated rows
 // from ever being pushed (Review Focus). The LEFT JOIN treats a prompt_id with no matching
 // prompts row (already deleted, or a stale row in tests) as conflict-free rather than hiding it.
+//
+// One row per prompt, oldest first, and never a second row for a prompt that already has one
+// in flight. Without this, releaseRows() after a failed push can hand back a prompt's insert
+// row *and* an update row queued behind it (queued while the insert was in flight) in the same
+// batch — the update would then be pushed with its stale pre-insert base_version instead of
+// waiting for completeRow() to rebase it onto the insert's acknowledged version (Review Focus:
+// a fix-round regression found this breaks after any single network failure).
 export async function claimBatch(
   db: SQLiteDatabase,
   spaceId: string,
@@ -72,6 +79,10 @@ export async function claimBatch(
      FROM sync_outbox o
      LEFT JOIN prompts p ON p.id = o.prompt_id
      WHERE o.space_id = ? AND o.in_flight = 0 AND COALESCE(p.has_conflict, 0) = 0
+       AND NOT EXISTS (
+         SELECT 1 FROM sync_outbox o2
+         WHERE o2.prompt_id = o.prompt_id AND (o2.in_flight = 1 OR o2.seq < o.seq)
+       )
      ORDER BY o.seq LIMIT ?`,
     spaceId,
     limit,

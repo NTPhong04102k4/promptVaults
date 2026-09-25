@@ -91,6 +91,36 @@ describe('claim / release', () => {
     expect((await rows())[0]?.in_flight).toBe(0)
   })
 
+  // Fix round 1 (Review Focus regression): a failed push releases a prompt's row back to
+  // in_flight = 0, but if an edit was queued behind it while it was in flight, a later
+  // claimBatch must not hand back both rows in the same batch — only completeRow() rebasing
+  // the queued row onto the acknowledged version makes it safe to push.
+  it('claims only the oldest row per prompt — a row released after a failed push does not surface a row queued behind it', async () => {
+    const db = await getDb()
+    await enqueue(db, 's', 'p', 'insert', 0)
+    const claimed = await claimBatch(db, 's', 50)
+    expect(claimed.map((r) => r.operation)).toEqual(['insert'])
+
+    // Edited while the insert is in flight — queued as its own row (coalescing rule).
+    await enqueue(db, 's', 'p', 'update', 0)
+
+    // The push fails; the insert row goes back to in_flight = 0.
+    await releaseRows(
+      db,
+      claimed.map((r) => r.seq),
+      'network',
+    )
+
+    // Both rows are now in_flight = 0, but only the oldest (the insert) may be claimed again —
+    // the update must wait for the insert to complete and rebase it.
+    const reclaimed = await claimBatch(db, 's', 50)
+    expect(reclaimed.map((r) => r.operation)).toEqual(['insert'])
+    expect(await rows()).toEqual([
+      { prompt_id: 'p', operation: 'insert', base_version: 0, in_flight: 1 },
+      { prompt_id: 'p', operation: 'update', base_version: 0, in_flight: 0 },
+    ])
+  })
+
   // P12: a prompt with an open conflict must never be able to sit at the head of the queue
   // and starve newer, unrelated rows out of every batch.
   it('excludes rows whose prompt has an open conflict, even when there are more of them than the batch size', async () => {
