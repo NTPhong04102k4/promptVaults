@@ -142,13 +142,18 @@ function refreshTokens(): Promise<boolean> {
   return refreshing
 }
 
-async function currentAccessToken(): Promise<string> {
-  let tokens = await getTokens()
+async function currentAccessToken(skipAuthRefresh?: boolean): Promise<string> {
+  const tokens = await getTokens()
   if (!tokens) throw new ApiError(401, 'not_signed_in', 'Bạn chưa đăng nhập.')
+  // skipAuthRefresh: send whatever is stored, expired or not — an explicit sign-out
+  // must not trigger a proactive refresh (ruling P6; a soon-to-expire access token
+  // at logout time is the normal case, not a reason to rotate the refresh token).
+  if (skipAuthRefresh) return tokens.accessToken
   if (Date.now() > tokens.expiresAt - EXPIRY_SKEW_MS) {
     if (!(await refreshTokens())) throw sessionExpired()
-    tokens = await getTokens()
-    if (!tokens) throw sessionExpired()
+    const fresh = await getTokens()
+    if (!fresh) throw sessionExpired()
+    return fresh.accessToken
   }
   return tokens.accessToken
 }
@@ -171,7 +176,7 @@ async function request<T>(
   const send = (token: string) =>
     rawFetch(method, path, body, { ...headers, Authorization: `Bearer ${token}` })
 
-  const sentToken = await currentAccessToken()
+  const sentToken = await currentAccessToken(options.skipAuthRefresh)
   let response = await send(sentToken)
   if (response.status === 401) {
     if (options.skipAuthRefresh) throw await toApiError(response)

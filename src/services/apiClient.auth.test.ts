@@ -1,21 +1,16 @@
-const mockSecure = new Map<string, string>()
-jest.mock('expo-secure-store', () => ({
-  AFTER_FIRST_UNLOCK: 'AFTER_FIRST_UNLOCK',
-  getItemAsync: async (key: string) => mockSecure.get(key) ?? null,
-  setItemAsync: async (key: string, value: string) => {
-    mockSecure.set(key, value)
-  },
-  deleteItemAsync: async (key: string) => {
-    mockSecure.delete(key)
-  },
-}))
 jest.mock('@/lib/deviceIdentity', () => ({
   getDeviceInfo: async () => ({ deviceId: 'dev-1', deviceName: 'Pixel', platform: 'android' }),
 }))
 
+import * as SecureStore from 'expo-secure-store'
+
 import { getTokens, onTokensCleared, resetTokenCacheForTests, setTokens } from '@/lib/tokenStore'
 
 import { apiClient } from './apiClient'
+
+// expo-secure-store is auto-mocked from __mocks__/expo-secure-store.js (see ruling P16);
+// its backing Map is exposed as __store so we can seed/inspect it directly.
+const mockSecure = (SecureStore as unknown as { __store: Map<string, string> }).__store
 
 type Handler = (url: string, init: RequestInit) => { status: number; body?: unknown }
 
@@ -171,6 +166,19 @@ describe('apiClient auth', () => {
     await expect(
       apiClient.post('/auth/logout', { refreshToken: 'old-refresh' }, { auth: true, skipAuthRefresh: true }),
     ).resolves.toBe('ok')
+    expect(authHeader(fetchMock.mock.calls[0]![1])).toBe('Bearer old-access')
+  })
+
+  it('skipAuthRefresh: sends the stored access token as-is with no proactive refresh, even when already expired', async () => {
+    await setTokens({ accessToken: 'old-access', refreshToken: 'old-refresh', expiresAt: Date.now() - 1 })
+    const fetchMock = mockFetch(() => ({ status: 200, body: { success: true, data: 'ok' } }))
+
+    await expect(
+      apiClient.post('/auth/logout', { refreshToken: 'old-refresh' }, { auth: true, skipAuthRefresh: true }),
+    ).resolves.toBe('ok')
+
+    expect(fetchMock.mock.calls).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([u]) => u.endsWith('/auth/refresh-token'))).toHaveLength(0)
     expect(authHeader(fetchMock.mock.calls[0]![1])).toBe('Bearer old-access')
   })
 })
