@@ -5,7 +5,7 @@ jest.mock('expo-crypto', () => {
   }
 })
 
-import { PERSONAL_VAULT_ID } from './db'
+import { LOCAL_SPACE_ID } from './db'
 import {
   createPrompt,
   deletePrompt,
@@ -19,7 +19,7 @@ import {
 describe('prompts', () => {
   it('creates, reads, updates and deletes a prompt', async () => {
     const created = await createPrompt({
-      vaultId: PERSONAL_VAULT_ID,
+      spaceId: LOCAL_SPACE_ID,
       title: 'Viết caption Instagram',
       content: 'Tạo caption ngắn gọn cho bài đăng.',
       category: 'Marketing',
@@ -45,7 +45,7 @@ describe('prompts', () => {
 
   it('toggles favorite and counts copies', async () => {
     const prompt = await createPrompt({
-      vaultId: PERSONAL_VAULT_ID,
+      spaceId: LOCAL_SPACE_ID,
       title: 'Tóm tắt bài viết',
       content: 'Tóm tắt nội dung dài.',
       category: 'Năng suất',
@@ -61,28 +61,28 @@ describe('prompts', () => {
 
   it('filters by category, favorites and full-text query', async () => {
     const marketing = await createPrompt({
-      vaultId: PERSONAL_VAULT_ID,
+      spaceId: LOCAL_SPACE_ID,
       title: 'Kịch bản video TikTok',
       content: 'Lên kịch bản 30 giây giới thiệu sản phẩm.',
       category: 'Marketing',
     })
     const content = await createPrompt({
-      vaultId: PERSONAL_VAULT_ID,
+      spaceId: LOCAL_SPACE_ID,
       title: 'Bài đăng blog',
       content: 'Không liên quan tới tìm kiếm.',
       category: 'Content',
     })
     await setFavorite(marketing.id, true)
 
-    const byCategory = await listPrompts(PERSONAL_VAULT_ID, { category: 'Marketing' })
+    const byCategory = await listPrompts(LOCAL_SPACE_ID, { category: 'Marketing' })
     expect(byCategory.map((p) => p.id)).toContain(marketing.id)
     expect(byCategory.map((p) => p.id)).not.toContain(content.id)
 
-    const favorites = await listPrompts(PERSONAL_VAULT_ID, { favoritesOnly: true })
+    const favorites = await listPrompts(LOCAL_SPACE_ID, { favoritesOnly: true })
     expect(favorites.map((p) => p.id)).toContain(marketing.id)
     expect(favorites.map((p) => p.id)).not.toContain(content.id)
 
-    const searched = await listPrompts(PERSONAL_VAULT_ID, { query: 'TikTok' })
+    const searched = await listPrompts(LOCAL_SPACE_ID, { query: 'TikTok' })
     expect(searched.map((p) => p.id)).toContain(marketing.id)
     expect(searched.map((p) => p.id)).not.toContain(content.id)
   })

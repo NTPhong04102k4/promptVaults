@@ -1,6 +1,6 @@
 jest.mock('./db', () => ({
   getDb: jest.fn(),
-  PERSONAL_VAULT_ID: '00000000-0000-4000-8000-000000000001',
+  LOCAL_SPACE_ID: '00000000-0000-4000-8000-000000000001',
 }))
 jest.mock('./supabase', () => ({
   supabase: {
@@ -9,7 +9,7 @@ jest.mock('./supabase', () => ({
   },
 }))
 
-import { getDb, PERSONAL_VAULT_ID } from './db'
+import { getDb, LOCAL_SPACE_ID } from './db'
 import { supabase } from './supabase'
 import { pullCloudPromptsToLocal, pushLocalPromptsToCloud } from './sync'
 
@@ -18,7 +18,7 @@ describe('pushLocalPromptsToCloud', () => {
     const rows = [
       {
         id: 'p1',
-        vault_id: 'v1',
+        space_id: 'v1',
         title: 'T1',
         content: 'C1',
         category: null,
@@ -62,7 +62,7 @@ describe('pushLocalPromptsToCloud', () => {
     const rows = [
       {
         id: 'p1',
-        vault_id: 'v1',
+        space_id: 'v1',
         title: 'T1',
         content: 'C1',
         category: null,
@@ -87,7 +87,7 @@ describe('pushLocalPromptsToCloud', () => {
     const rows = [
       {
         id: 'p1',
-        vault_id: 'v1',
+        space_id: 'v1',
         title: 'T1',
         content: 'C1',
         category: null,
@@ -137,10 +137,10 @@ describe('pullCloudPromptsToLocal', () => {
     const result = await pullCloudPromptsToLocal()
 
     expect(runAsync).toHaveBeenCalledWith(
-      `INSERT INTO prompts (id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
+      `INSERT INTO prompts (id, space_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       'p1',
-      PERSONAL_VAULT_ID,
+      LOCAL_SPACE_ID,
       'T1',
       'C1',
       null,

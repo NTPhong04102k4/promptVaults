@@ -1,9 +1,9 @@
-import { getDb, PERSONAL_VAULT_ID } from './db'
+import { getDb, LOCAL_SPACE_ID } from './db'
 import { supabase } from './supabase'
 
 type LocalPromptRow = {
   id: string
-  vault_id: string
+  space_id: string
   title: string
   content: string
   category: string | null
@@ -20,8 +20,8 @@ export async function pushLocalPromptsToCloud(): Promise<{ synced: number; faile
   if (!userId) throw new Error('not_authenticated')
 
   const rows = await db.getAllAsync<LocalPromptRow>(
-    'SELECT id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at FROM prompts WHERE vault_id = ? AND (synced_at IS NULL OR updated_at > synced_at)',
-    PERSONAL_VAULT_ID,
+    'SELECT id, space_id, title, content, category, tags, is_favorite, created_at, updated_at FROM prompts WHERE space_id = ? AND (synced_at IS NULL OR updated_at > synced_at)',
+    LOCAL_SPACE_ID,
   )
 
   let synced = 0
@@ -90,12 +90,12 @@ export async function pullCloudPromptsToLocal(): Promise<{ pulled: number }> {
     )
 
     if (!local) {
-      const sql = `INSERT INTO prompts (id, vault_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
+      const sql = `INSERT INTO prompts (id, space_id, title, content, category, tags, is_favorite, created_at, updated_at, synced_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       await db.runAsync(
         sql,
         row.id,
-        PERSONAL_VAULT_ID,
+        LOCAL_SPACE_ID,
         row.title,
         row.content,
         row.category,

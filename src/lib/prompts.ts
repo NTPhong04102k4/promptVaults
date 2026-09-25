@@ -8,7 +8,7 @@ export type PromptCategory = (typeof PROMPT_CATEGORIES)[number]
 
 export type Prompt = {
   id: string
-  vaultId: string
+  spaceId: string
   title: string
   content: string
   category: string | null
@@ -16,11 +16,13 @@ export type Prompt = {
   copyCount: number
   createdAt: number
   updatedAt: number
+  version: number
+  hasConflict: boolean
 }
 
 type PromptRow = {
   id: string
-  vault_id: string
+  space_id: string
   title: string
   content: string
   category: string | null
@@ -28,15 +30,17 @@ type PromptRow = {
   copy_count: number
   created_at: number
   updated_at: number
+  version: number
+  has_conflict: number
 }
 
 const SELECT_COLUMNS =
-  'id, vault_id, title, content, category, is_favorite, copy_count, created_at, updated_at'
+  'id, space_id, title, content, category, is_favorite, copy_count, created_at, updated_at, version, has_conflict'
 
 function fromRow(row: PromptRow): Prompt {
   return {
     id: row.id,
-    vaultId: row.vault_id,
+    spaceId: row.space_id,
     title: row.title,
     content: row.content,
     category: row.category,
@@ -44,6 +48,8 @@ function fromRow(row: PromptRow): Prompt {
     copyCount: row.copy_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    version: row.version,
+    hasConflict: row.has_conflict === 1,
   }
 }
 
@@ -64,12 +70,12 @@ export type ListPromptsOptions = {
 }
 
 export async function listPrompts(
-  vaultId: string,
+  spaceId: string,
   options: ListPromptsOptions = {},
 ): Promise<Prompt[]> {
   const db = await getDb()
-  const conditions = ['p.vault_id = ?']
-  const params: (string | number)[] = [vaultId]
+  const conditions = ['p.space_id = ?']
+  const params: (string | number)[] = [spaceId]
 
   const query = options.query?.trim()
   if (query) {
@@ -85,7 +91,7 @@ export async function listPrompts(
   }
 
   const rows = await db.getAllAsync<PromptRow>(
-    `SELECT p.id, p.vault_id, p.title, p.content, p.category, p.is_favorite, p.copy_count, p.created_at, p.updated_at
+    `SELECT p.id, p.space_id, p.title, p.content, p.category, p.is_favorite, p.copy_count, p.created_at, p.updated_at, p.version, p.has_conflict
      FROM prompts p
      WHERE ${conditions.join(' AND ')}
      ORDER BY p.updated_at DESC`,
@@ -104,7 +110,7 @@ export async function getPrompt(id: string): Promise<Prompt | null> {
 }
 
 export type CreatePromptInput = {
-  vaultId: string
+  spaceId: string
   title: string
   content: string
   category: string | null
@@ -115,10 +121,10 @@ export async function createPrompt(input: CreatePromptInput): Promise<Prompt> {
   const id = Crypto.randomUUID()
   const now = Date.now()
   await db.runAsync(
-    `INSERT INTO prompts (id, vault_id, title, content, category, is_favorite, copy_count, created_at, updated_at)
+    `INSERT INTO prompts (id, space_id, title, content, category, is_favorite, copy_count, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)`,
     id,
-    input.vaultId,
+    input.spaceId,
     input.title,
     input.content,
     input.category,
@@ -127,7 +133,7 @@ export async function createPrompt(input: CreatePromptInput): Promise<Prompt> {
   )
   return {
     id,
-    vaultId: input.vaultId,
+    spaceId: input.spaceId,
     title: input.title,
     content: input.content,
     category: input.category,
@@ -135,6 +141,8 @@ export async function createPrompt(input: CreatePromptInput): Promise<Prompt> {
     copyCount: 0,
     createdAt: now,
     updatedAt: now,
+    version: 0,
+    hasConflict: false,
   }
 }
 

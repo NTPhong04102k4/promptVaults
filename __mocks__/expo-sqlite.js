@@ -28,6 +28,17 @@ class MockSQLiteDatabase {
     return stmt.all(...params)
   }
 
+  async withTransactionAsync(task) {
+    this.db.exec('BEGIN')
+    try {
+      await task()
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   close() {
     if (this.db) {
       this.db.close()

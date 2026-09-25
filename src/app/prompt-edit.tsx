@@ -3,7 +3,7 @@ import { ScrollView, Text, TextInput, View } from 'react-native'
 
 import { Icon } from '@/components/Icon'
 import { Button, FilterChip, IconButton, TextField } from '@/components/ui'
-import { PERSONAL_VAULT_ID } from '@/lib/db'
+import { LOCAL_SPACE_ID } from '@/lib/db'
 import { createPrompt, getPrompt, PROMPT_CATEGORIES, updatePrompt } from '@/lib/prompts'
 import { goBack, useRouteParams } from '@/navigation'
 import { makeStyles, text, useTheme } from '@/theme'
@@ -37,7 +37,7 @@ export default function PromptEditScreen() {
         await updatePrompt(id, { title: title.trim(), content: content.trim(), category })
       } else {
         await createPrompt({
-          vaultId: PERSONAL_VAULT_ID,
+          spaceId: LOCAL_SPACE_ID,
           title: title.trim(),
           content: content.trim(),
           category,
