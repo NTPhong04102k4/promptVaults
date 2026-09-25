@@ -1,3 +1,12 @@
+import { getDeviceInfo } from '@/lib/deviceIdentity'
+import {
+  clearTokens,
+  getTokens,
+  normalizeTokens,
+  type RawTokens,
+  setTokens,
+} from '@/lib/tokenStore'
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -17,6 +26,10 @@ export type RequestOptions = {
   // Attach the bearer token and refresh it on 401 (Task 3).
   auth?: boolean
   headers?: Record<string, string>
+  // Return a 401 as an ApiError as-is: no refresh attempt, no token clearing, no
+  // "expired" event. Used by an explicit sign-out so a dead session doesn't trigger
+  // the "session expired" alert (ruling P6).
+  skipAuthRefresh?: boolean
 }
 
 type Envelope = {
@@ -92,15 +105,91 @@ export async function parseBody<T>(response: Response, envelope: boolean): Promi
   return body as T
 }
 
+const EXPIRY_SKEW_MS = 30_000
+
+function sessionExpired(): ApiError {
+  return new ApiError(401, 'session_expired', 'Phiên đăng nhập đã hết hạn.')
+}
+
+let refreshing: Promise<boolean> | null = null
+
+// Single-flight: /auth/refresh-token rotates (revokes) the refresh token, so two
+// concurrent refreshes would make the second one fail and sign the user out.
+function refreshTokens(): Promise<boolean> {
+  if (!refreshing) {
+    refreshing = (async () => {
+      const tokens = await getTokens()
+      if (!tokens) return false
+      const device = await getDeviceInfo()
+      // rawFetch throws ApiError('network') when offline — tokens are kept in that case.
+      const response = await rawFetch(
+        'POST',
+        '/auth/refresh-token',
+        { refreshToken: tokens.refreshToken, ...device },
+        {},
+      )
+      if (response.status === 400 || response.status === 401 || response.status === 422) {
+        await clearTokens('expired')
+        return false
+      }
+      if (!response.ok) throw await toApiError(response)
+      await setTokens(normalizeTokens(await parseBody<RawTokens>(response, false)))
+      return true
+    })().finally(() => {
+      refreshing = null
+    })
+  }
+  return refreshing
+}
+
+async function currentAccessToken(): Promise<string> {
+  let tokens = await getTokens()
+  if (!tokens) throw new ApiError(401, 'not_signed_in', 'Bạn chưa đăng nhập.')
+  if (Date.now() > tokens.expiresAt - EXPIRY_SKEW_MS) {
+    if (!(await refreshTokens())) throw sessionExpired()
+    tokens = await getTokens()
+    if (!tokens) throw sessionExpired()
+  }
+  return tokens.accessToken
+}
+
 async function request<T>(
   method: string,
   path: string,
   body: unknown,
   options: RequestOptions = {},
 ): Promise<T> {
-  const response = await rawFetch(method, path, body, options.headers ?? {})
+  const envelope = options.envelope ?? true
+  const headers = options.headers ?? {}
+
+  if (!options.auth) {
+    const response = await rawFetch(method, path, body, headers)
+    if (!response.ok) throw await toApiError(response)
+    return parseBody<T>(response, envelope)
+  }
+
+  const send = (token: string) =>
+    rawFetch(method, path, body, { ...headers, Authorization: `Bearer ${token}` })
+
+  const sentToken = await currentAccessToken()
+  let response = await send(sentToken)
+  if (response.status === 401) {
+    if (options.skipAuthRefresh) throw await toApiError(response)
+    // A concurrent request may already have refreshed while this one was in flight —
+    // then just retry with the new token instead of rotating the refresh token again.
+    const stored = await getTokens()
+    const alreadyRefreshed = stored !== null && stored.accessToken !== sentToken
+    if (!alreadyRefreshed && !(await refreshTokens())) throw sessionExpired()
+    const fresh = await getTokens()
+    if (!fresh) throw sessionExpired()
+    response = await send(fresh.accessToken)
+    if (response.status === 401) {
+      await clearTokens('expired')
+      throw sessionExpired()
+    }
+  }
   if (!response.ok) throw await toApiError(response)
-  return parseBody<T>(response, options.envelope ?? true)
+  return parseBody<T>(response, envelope)
 }
 
 export const apiClient = {
