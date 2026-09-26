@@ -184,3 +184,17 @@ describe('completeRow rebases queued rows onto an acknowledged version', () => {
     expect(await rows()).toEqual([{ prompt_id: 'p', operation: 'update', base_version: 0, in_flight: 0 }])
   })
 })
+
+describe('claimBatch skipSeqs', () => {
+  it('never returns a skipped row, nor a later row of the same prompt', async () => {
+    const db = await getDb()
+    await enqueue(db, 's', 'a', 'insert', 0)
+    await enqueue(db, 's', 'b', 'insert', 0)
+    const [a] = await claimBatch(db, 's', 1)
+    await releaseRows(db, [a!.seq], 'rejected: x')
+
+    const batch = await claimBatch(db, 's', 50, [a!.seq])
+
+    expect(batch.map((r) => r.prompt_id)).toEqual(['b'])
+  })
+})

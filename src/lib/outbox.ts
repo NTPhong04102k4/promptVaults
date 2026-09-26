@@ -73,18 +73,22 @@ export async function claimBatch(
   db: SQLiteDatabase,
   spaceId: string,
   limit: number,
+  // Rows already rejected earlier in this sync run (Task 16 passes one set per space per run).
+  skipSeqs: readonly number[] = [],
 ): Promise<OutboxRow[]> {
+  const skip = skipSeqs.length > 0 ? `AND o.seq NOT IN (${skipSeqs.map(() => '?').join(', ')})` : ''
   const rows = await db.getAllAsync<OutboxRow>(
     `SELECT o.seq, o.space_id, o.prompt_id, o.operation, o.base_version, o.attempts
      FROM sync_outbox o
      LEFT JOIN prompts p ON p.id = o.prompt_id
-     WHERE o.space_id = ? AND o.in_flight = 0 AND COALESCE(p.has_conflict, 0) = 0
+     WHERE o.space_id = ? AND o.in_flight = 0 AND COALESCE(p.has_conflict, 0) = 0 ${skip}
        AND NOT EXISTS (
          SELECT 1 FROM sync_outbox o2
          WHERE o2.prompt_id = o.prompt_id AND (o2.in_flight = 1 OR o2.seq < o.seq)
        )
      ORDER BY o.seq LIMIT ?`,
     spaceId,
+    ...skipSeqs,
     limit,
   )
   for (const row of rows) {
