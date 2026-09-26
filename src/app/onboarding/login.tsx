@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Text, View } from 'react-native'
+import { Image } from 'expo-image'
 
-import { AuthLayout, Button, Checkbox, FooterPrompt, TextField } from '@/components/ui'
-import { login } from '@/lib/authApi'
+import googleLogo from '@/assets/images/google.svg'
+import { AuthLayout, Button, Checkbox, FooterPrompt, OrDivider, TextField } from '@/components/ui'
+import { login, loginWithFacebookNative, loginWithGoogleNative } from '@/lib/authApi'
 import { type AuthErrorField, toAuthError } from '@/lib/authForm'
+import { isBiometricAvailable } from '@/lib/biometric'
 import { getBiometricEnrollment, signInWithBiometric } from '@/lib/biometricLogin'
+import { signInWithFacebookNative } from '@/lib/facebookNativeLogin'
+import { signInWithGoogleNative } from '@/lib/googleNativeLogin'
 import { push, replace, useRouteParams } from '@/navigation'
 import { useAuthStore } from '@/store'
 import { makeStyles, text } from '@/theme'
@@ -20,9 +25,11 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('')
   const [errors, setErrors] = useState<Errors>({})
   const [loading, setLoading] = useState(false)
+  const [biometricAvailable, setBiometricAvailable] = useState(false)
   const [biometricReady, setBiometricReady] = useState(false)
 
   useEffect(() => {
+    isBiometricAvailable().then(setBiometricAvailable)
     getBiometricEnrollment().then((e) => setBiometricReady(e !== null))
   }, [])
 
@@ -37,6 +44,48 @@ export default function LoginScreen() {
     } catch {
       // Server answers every failure with the same InvalidCredentials by design.
       setErrors({ form: 'Không đăng nhập được bằng sinh trắc học, hãy dùng mật khẩu.' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Test song song voi luong WebView (Huong B) ben duoi — cung mot tai khoan/lien-ket-theo-email,
+  // chi khac cach lay token: SDK native tra ve idToken/accessToken truc tiep, khong qua WebView.
+  async function handleGoogleNative() {
+    setErrors({})
+    setLoading(true)
+    try {
+      const result = await signInWithGoogleNative()
+      if (!result.ok) {
+        if (!result.cancelled) setErrors({ form: result.error })
+        return
+      }
+      await loginWithGoogleNative(result.idToken)
+      await useAuthStore.getState().refreshUser()
+      replace('sync')
+    } catch (e) {
+      const { field, message } = toAuthError(e)
+      setErrors({ [field]: message })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleFacebookNative() {
+    setErrors({})
+    setLoading(true)
+    try {
+      const result = await signInWithFacebookNative()
+      if (!result.ok) {
+        if (!result.cancelled) setErrors({ form: result.error })
+        return
+      }
+      await loginWithFacebookNative(result.accessToken)
+      await useAuthStore.getState().refreshUser()
+      replace('sync')
+    } catch (e) {
+      const { field, message } = toAuthError(e)
+      setErrors({ [field]: message })
     } finally {
       setLoading(false)
     }
@@ -64,14 +113,53 @@ export default function LoginScreen() {
 
   return (
     <AuthLayout title="Đăng nhập">
-      {biometricReady && (
+      {biometricReady ? (
         <Button
           variant="tonal"
           label="Đăng nhập bằng vân tay / Face ID"
           onPress={handleBiometric}
           disabled={loading}
         />
+      ) : (
+        biometricAvailable && (
+          <Text style={styles.biometricHint}>
+            Đặt vân tay đăng nhập nhanh trong Cài đặt sau khi đăng nhập.
+          </Text>
+        )
       )}
+
+      <View style={styles.socialGap}>
+        <Button
+          variant="tonal"
+          label="Đăng nhập với Google"
+          icon={<Image source={googleLogo} style={styles.socialLogo} />}
+          onPress={() => push('oauthWebview', { provider: 'google' })}
+          disabled={loading}
+        />
+        <Button
+          variant="tonal"
+          label="Đăng nhập với Facebook"
+          onPress={() => push('oauthWebview', { provider: 'facebook' })}
+          disabled={loading}
+        />
+
+        {/* Test song song luong native SDK — xem so sanh trong oauthWebLogin.ts (Huong B). */}
+        <Button
+          variant="tonal"
+          label="Google (Native SDK)"
+          icon={<Image source={googleLogo} style={styles.socialLogo} />}
+          onPress={handleGoogleNative}
+          disabled={loading}
+        />
+        <Button
+          variant="tonal"
+          label="Facebook (Native SDK)"
+          onPress={handleFacebookNative}
+          disabled={loading}
+        />
+      </View>
+
+      <OrDivider label="hoặc đăng nhập bằng email" />
 
       <View style={styles.fields}>
         <TextField
@@ -129,6 +217,9 @@ export default function LoginScreen() {
 }
 
 const useStyles = makeStyles(({ colors, typography, spacing }) => ({
+  socialGap: { gap: spacing.md },
+  socialLogo: { width: 20, height: 20 },
+  biometricHint: { ...typography.bodySmall, color: colors.onSurfaceVariant, textAlign: 'center' },
   fields: { gap: spacing.lg },
   forgot: { ...text('bodyMedium', 'semiBold'), color: colors.primary },
   keepText: { ...typography.bodyLarge, color: colors.onSurface },

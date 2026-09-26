@@ -41,7 +41,7 @@ type Envelope = {
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? ''
 
-function resolveUrl(path: string): string {
+export function resolveUrl(path: string): string {
   if (/^https?:\/\//.test(path)) return path
   return `${BASE_URL}${path}`
 }

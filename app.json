@@ -1,14 +1,17 @@
 {
   "expo": {
-    "name": "PropmtVaults",
-    "slug": "PropmtVaults",
+    "name": "PromptVaults",
+    "slug": "PromptVaults",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "propmtvaults",
+    "scheme": "promptvaults",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.ntp.PromptVaults",
+      "googleServicesFile": "./GoogleService-Info.plist",
+      "supportsTablet": false
     },
     "android": {
       "adaptiveIcon": {
@@ -18,7 +21,8 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.ntp.PropmtVaults"
+      "package": "com.ntp.PromptVaults",
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "output": "static",
@@ -47,7 +51,17 @@
           "faceIDPermission": "Cho phép PromptVault dùng Face ID để đăng nhập."
         }
       ],
-      "expo-background-task"
+      "expo-background-task",
+      "@react-native-google-signin/google-signin",
+      [
+        "react-native-fbsdk-next",
+        {
+          "appID": "28617340301240026",
+          "clientToken": "2f069e278967798bb894218a4f34b1d8",
+          "displayName": "PromptVaults",
+          "scheme": "fb28617340301240026"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

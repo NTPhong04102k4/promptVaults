@@ -59,6 +59,31 @@ export async function login(usernameOrPhoneOrEmail: string, password: string): P
   await setTokens(normalizeTokens(raw))
 }
 
+// Luong native (RN Google Sign-In SDK): id_token da lay san tu Google, server tu verify —
+// khac voi luong WebView (Huong B) o oauthWebLogin.ts. Endpoint tra ve TokenResponse tho
+// (envelope:false), giong /auth/login.
+export async function loginWithGoogleNative(idToken: string): Promise<void> {
+  const device = await getDeviceInfo()
+  const raw = await apiClient.post<RawTokens>(
+    '/auth/login/google/native',
+    { idToken, ...device },
+    { envelope: false },
+  )
+  await setTokens(normalizeTokens(raw))
+}
+
+// Luong native (RN FBSDK): access token da lay san tu Facebook, server tu verify qua
+// debug_token — khac voi luong WebView (Huong B) o oauthWebLogin.ts.
+export async function loginWithFacebookNative(accessToken: string): Promise<void> {
+  const device = await getDeviceInfo()
+  const raw = await apiClient.post<RawTokens>(
+    '/auth/login/facebook/native',
+    { accessToken, ...device },
+    { envelope: false },
+  )
+  await setTokens(normalizeTokens(raw))
+}
+
 export async function forgotPassword(email: string): Promise<void> {
   await apiClient.post('/auth/forgot-password', { email })
 }
@@ -84,6 +109,12 @@ export async function getMe(): Promise<AccountProfile> {
 
 export async function updateMe(patch: { firstName?: string; lastName?: string }): Promise<void> {
   await apiClient.patch('/account/me', patch, { auth: true })
+}
+
+// Server revokes every other session on success (ChangePasswordRequest doc comment) — this
+// device's own tokens stay valid since they were just used to authenticate the call.
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await apiClient.post('/account/me/change-password', { currentPassword, newPassword }, { auth: true })
 }
 
 // Server-side revoke of ONE specific session — a pure, best-effort network call that never
