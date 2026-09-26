@@ -1,19 +1,25 @@
+import { memo } from 'react'
 import { Pressable, Text, View } from 'react-native'
 
 import { Icon } from '@/components/Icon'
 import { makeStyles, text, useTheme } from '@/theme'
 
 type Props = {
+  id: string
   title: string
   snippet: string
   category: string | null
   isFavorite: boolean
-  onPress: () => void
-  onToggleFavorite: () => void
-  onCopy: () => void
+  onPress: (id: string) => void
+  onToggleFavorite: (id: string) => void
+  onCopy: (id: string) => void
 }
 
-export function PromptCard({
+// Memoized so a FlatList of these doesn't re-render every row on every parent
+// render — effective only as long as callers pass stable (useCallback) handlers
+// instead of a new arrow function per item/render; see index/search/favorites screens.
+export const PromptCard = memo(function PromptCard({
+  id,
   title,
   snippet,
   category,
@@ -26,7 +32,7 @@ export function PromptCard({
   const { colors } = useTheme()
 
   return (
-    <Pressable onPress={onPress} style={styles.card}>
+    <Pressable onPress={() => onPress(id)} style={styles.card}>
       <View style={styles.header}>
         <Text style={styles.title} numberOfLines={1}>
           {title}
@@ -36,7 +42,7 @@ export function PromptCard({
             accessibilityRole="button"
             accessibilityLabel={isFavorite ? 'Bỏ yêu thích' : 'Yêu thích'}
             hitSlop={8}
-            onPress={onToggleFavorite}
+            onPress={() => onToggleFavorite(id)}
           >
             <Icon
               name={isFavorite ? 'favoriteFilled' : 'favorite'}
@@ -48,7 +54,7 @@ export function PromptCard({
             accessibilityRole="button"
             accessibilityLabel="Copy nội dung"
             hitSlop={8}
-            onPress={onCopy}
+            onPress={() => onCopy(id)}
           >
             <Icon name="copy" size={20} color={colors.onSurface} />
           </Pressable>
@@ -66,7 +72,7 @@ export function PromptCard({
       )}
     </Pressable>
   )
-}
+})
 
 const useStyles = makeStyles(({ colors, shape, spacing }) => ({
   card: {

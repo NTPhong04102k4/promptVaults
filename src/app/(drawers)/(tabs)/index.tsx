@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { FlatList, Pressable, Text, View } from 'react-native'
 
 import { Icon } from '@/components/Icon'
@@ -12,6 +13,8 @@ export default function HomeScreen() {
   const styles = useStyles()
   const { select } = useResponsive()
   const { prompts, category, setCategory, toggleFavorite, copyToClipboard } = usePrompts()
+  // Stable handler so PromptCard's React.memo isn't defeated by a new closure per render.
+  const handlePress = useCallback((id: string) => push('promptDetail', { id }), [])
 
   return (
     <View style={styles.container}>
@@ -48,13 +51,14 @@ export default function HomeScreen() {
         }
         renderItem={({ item }) => (
           <PromptCard
+            id={item.id}
             title={item.title}
             snippet={item.content}
             category={item.category}
             isFavorite={item.isFavorite}
-            onPress={() => push('promptDetail', { id: item.id })}
-            onToggleFavorite={() => toggleFavorite(item.id)}
-            onCopy={() => copyToClipboard(item.id)}
+            onPress={handlePress}
+            onToggleFavorite={toggleFavorite}
+            onCopy={copyToClipboard}
           />
         )}
         ItemSeparatorComponent={() => <View style={styles.separator} />}

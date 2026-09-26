@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { FlatList, Text, View } from 'react-native'
 
 import { FilterChip, PromptCard, SearchBar } from '@/components/ui'
@@ -12,6 +13,8 @@ export default function SearchScreen() {
   const { select } = useResponsive()
   const { prompts, category, setCategory, query, setQuery, toggleFavorite, copyToClipboard } =
     usePrompts()
+  // Stable handler so PromptCard's React.memo isn't defeated by a new closure per render.
+  const handlePress = useCallback((id: string) => push('promptDetail', { id }), [])
 
   return (
     <View style={styles.container}>
@@ -47,13 +50,14 @@ export default function SearchScreen() {
         }
         renderItem={({ item }) => (
           <PromptCard
+            id={item.id}
             title={item.title}
             snippet={item.content}
             category={item.category}
             isFavorite={item.isFavorite}
-            onPress={() => push('promptDetail', { id: item.id })}
-            onToggleFavorite={() => toggleFavorite(item.id)}
-            onCopy={() => copyToClipboard(item.id)}
+            onPress={handlePress}
+            onToggleFavorite={toggleFavorite}
+            onCopy={copyToClipboard}
           />
         )}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
