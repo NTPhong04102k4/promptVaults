@@ -41,6 +41,12 @@
           "faceIDPermission": "Cho phép PromptVault dùng Face ID để mở khoá app."
         }
       ],
+      [
+        "@sbaiahmed1/react-native-biometrics",
+        {
+          "faceIDPermission": "Cho phép PromptVault dùng Face ID để đăng nhập."
+        }
+      ],
       "expo-background-task"
     ],
     "experiments": {
