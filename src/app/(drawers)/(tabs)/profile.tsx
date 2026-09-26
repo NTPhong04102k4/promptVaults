@@ -48,8 +48,7 @@ export default function ProfileScreen() {
     <View style={styles.container}>
       <Pressable
         style={styles.accountRow}
-        onPress={() => (user ? undefined : push('login'))}
-        disabled={!!user}
+        onPress={() => push(user ? 'profileEdit' : 'login')}
       >
         <Avatar label={getInitials(user)} size={56} />
         <View style={styles.accountText}>

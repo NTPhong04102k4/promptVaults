@@ -134,6 +134,16 @@ function RootLayoutContent() {
             sheetCornerRadius: theme.shape.extraLarge,
           }}
         />
+        <Stack.Screen
+          name="profile-edit"
+          options={{
+            presentation: 'formSheet',
+            sheetAllowedDetents: 'fitToContents',
+            sheetGrabberVisible: true,
+            sheetCornerRadius: theme.shape.extraLarge,
+          }}
+        />
+        <Stack.Screen name="oauth-webview" options={{ presentation: 'modal', headerShown: false }} />
         <Stack.Screen name="onboarding/welcome" options={{ headerShown: false }} />
         <Stack.Screen name="onboarding/signup" />
         <Stack.Screen name="onboarding/login" />

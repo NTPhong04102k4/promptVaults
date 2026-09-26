@@ -15,6 +15,8 @@ export const ROUTES = {
   promptDetail: '/prompt-detail',
   promptEdit: '/prompt-edit',
   vaultSwitcher: '/vault-switcher',
+  profileEdit: '/profile-edit',
+  oauthWebview: '/oauth-webview',
   signup: '/onboarding/signup',
   login: '/onboarding/login',
   verifyEmail: '/onboarding/verify-email',
@@ -38,6 +40,8 @@ export type RouteParams = {
   promptDetail: { id: string }
   promptEdit: { id?: string }
   vaultSwitcher: undefined
+  profileEdit: undefined
+  oauthWebview: { provider: 'google' | 'facebook' }
   welcome: undefined
   signup: undefined
   login: { email?: string }
