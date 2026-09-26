@@ -28,6 +28,7 @@ function RootLayoutContent() {
   const theme = useTheme()
   const [fontsLoaded, fontError] = useFonts(fontAssets)
   const hydrated = useAuthStore((state) => state.hydrated)
+  const restoring = useAuthStore((state) => state.restoring)
   const [checked, setChecked] = useState(false)
   const [locked, setLocked] = useState(false)
   const appState = useRef<AppStateStatus>(AppState.currentState)
@@ -62,7 +63,9 @@ function RootLayoutContent() {
   }, [])
 
   // A font load failure falls back to the system font rather than blocking the app.
-  const ready = (fontsLoaded || fontError !== null) && hydrated && checked
+  // `restoring` only stays true through a cold-start sign-out (Task 17 fix round 2, issue 1) —
+  // it never delays the normal "stay signed in" launch.
+  const ready = (fontsLoaded || fontError !== null) && hydrated && checked && !restoring
 
   useEffect(() => {
     if (ready) SplashScreen.hideAsync()

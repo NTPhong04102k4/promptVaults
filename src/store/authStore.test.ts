@@ -49,7 +49,7 @@ const tokens = { accessToken: 'access-secret', refreshToken: 'refresh-secret', e
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 beforeEach(() => {
-  useAuthStore.setState({ user: null, hasOnboarded: false, keepSignedIn: true })
+  useAuthStore.setState({ user: null, hasOnboarded: false, keepSignedIn: true, restoring: true })
   jest.clearAllMocks()
   ;(onTokensCleared as jest.Mock).mockReturnValue(jest.fn())
   ;(awaitIdle as jest.Mock).mockResolvedValue(undefined)
@@ -203,6 +203,89 @@ describe('auth actions', () => {
     expect(logout).toHaveBeenCalled()
     expect(clearSyncedData).toHaveBeenCalled()
     expect(useAuthStore.getState().user).toBeNull()
+  })
+
+  // Task 17 fix round 2 (issue 1): a stalled flush must not widen the window where the UI
+  // renders while the previous account's data is still live — `restoring` gates that in
+  // _layout.tsx — and signOut() must still complete (the wipe is not conditional on the
+  // flush finishing).
+  describe('restoring (gates _layout.tsx rendering during a cold-start sign-out)', () => {
+    it('clears immediately for a guest cold start (no tokens) — nothing to hide', async () => {
+      ;(getTokens as jest.Mock).mockResolvedValue(null)
+      await useAuthStore.persist.rehydrate()
+
+      startAuthListener()
+      await flush()
+
+      expect(useAuthStore.getState().restoring).toBe(false)
+    })
+
+    it('clears immediately for the normal "stay signed in" path, without waiting for refreshUser', async () => {
+      ;(getTokens as jest.Mock).mockResolvedValue(tokens)
+      let resolveGetMe!: (profile: AccountProfile) => void
+      ;(getMe as jest.Mock).mockReturnValue(
+        new Promise((resolve) => {
+          resolveGetMe = resolve
+        }),
+      )
+      await useAuthStore.persist.rehydrate()
+
+      startAuthListener()
+      await flush()
+
+      // refreshUser() is still pending, but restoring must already be false — the normal
+      // launch path was never meant to wait on this network call.
+      expect(useAuthStore.getState().restoring).toBe(false)
+      resolveGetMe(profile)
+    })
+
+    it('stays true through the cold-start flush and sign-out, then clears', async () => {
+      let resolveClear!: () => void
+      ;(clearSyncedData as jest.Mock).mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveClear = resolve
+          }),
+      )
+      ;(getTokens as jest.Mock).mockResolvedValue(tokens)
+      useAuthStore.setState({ user: toAuthUser(profile), keepSignedIn: false })
+      await Promise.resolve()
+      await useAuthStore.persist.rehydrate()
+
+      startAuthListener()
+      await flush()
+
+      expect(useAuthStore.getState().restoring).toBe(true)
+
+      resolveClear()
+      await flush()
+
+      expect(useAuthStore.getState().restoring).toBe(false)
+    })
+
+    // The exact regression from the round-1 review: apiClient has no request timeout, so an
+    // unbounded flush could hang cold start indefinitely on a stalled network. The flush must
+    // give up on its own, and signOut() must complete (wipe the previous account) regardless.
+    it('bounds a never-resolving flush so the cold-start sign-out still completes', async () => {
+      jest.useFakeTimers()
+      try {
+        ;(getTokens as jest.Mock).mockResolvedValue(tokens)
+        ;(runSync as jest.Mock).mockReturnValue(new Promise(() => undefined)) // never settles
+        useAuthStore.setState({ user: toAuthUser(profile), keepSignedIn: false })
+        await Promise.resolve()
+        await useAuthStore.persist.rehydrate()
+
+        startAuthListener()
+        await jest.advanceTimersByTimeAsync(5000)
+
+        expect(logout).toHaveBeenCalled()
+        expect(clearSyncedData).toHaveBeenCalled()
+        expect(useAuthStore.getState().user).toBeNull()
+        expect(useAuthStore.getState().restoring).toBe(false)
+      } finally {
+        jest.useRealTimers()
+      }
+    })
   })
 
   it('clears the user when tokens are cleared elsewhere (expired refresh)', () => {

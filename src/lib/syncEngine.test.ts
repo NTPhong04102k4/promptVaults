@@ -122,4 +122,37 @@ describe('awaitIdle', () => {
     await expect(awaitIdle()).resolves.toBeUndefined()
     await sync
   })
+
+  // Task 17 fix round 2 (issue 1): apiClient has no request timeout, so a stalled network
+  // could otherwise keep a run — and any caller awaiting awaitIdle() — pending forever.
+  it('gives up waiting after a bounded time when the run never settles', async () => {
+    jest.useFakeTimers()
+    try {
+      let resolvePull!: (value: { applied: number; snapshot: boolean }) => void
+      ;(pullSpace as jest.Mock).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePull = resolve
+          }),
+      )
+
+      const sync = runSync()
+      let settled = false
+      const idlePromise = awaitIdle().then(() => {
+        settled = true
+      })
+
+      await jest.advanceTimersByTimeAsync(5000)
+      await idlePromise
+
+      expect(settled).toBe(true)
+
+      // Settle the still-pending run so module state (`running`) doesn't leak into later
+      // tests — awaitIdle() gave up waiting, but the run itself is still in flight.
+      resolvePull({ applied: 0, snapshot: false })
+      await sync
+    } finally {
+      jest.useRealTimers()
+    }
+  })
 })

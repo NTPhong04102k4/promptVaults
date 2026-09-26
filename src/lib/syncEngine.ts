@@ -14,6 +14,10 @@ import { getTokens } from './tokenStore'
 export type SyncSummary = { pushed: number; conflicts: number; rejected: number; pulled: number; errors: number }
 
 const MAX_PUSH_ROUNDS = 10
+// apiClient has no request timeout/AbortController, so a stalled network (captive portal,
+// half-open connection) could otherwise keep a doSync() run — and anyone awaiting awaitIdle()
+// — pending indefinitely (Task 17 fix round 2, issue 1).
+const IDLE_TIMEOUT_MS = 5000
 
 let running: Promise<SyncSummary> | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -64,17 +68,31 @@ export function runSync(): Promise<SyncSummary> {
   return running
 }
 
-// Resolves once no doSync() run is currently in flight. The sign-out path awaits this before
-// wiping synced data so a pull that's already mid-flight can't finish AFTER the wipe and write
-// the old account's rows back to disk for a space whose row is already gone (Task 17 fix round
-// 1, issue 3). Never rejects, even if the awaited run itself failed.
+// Resolves once no doSync() run is currently in flight, or after IDLE_TIMEOUT_MS — whichever
+// comes first. The sign-out path awaits this before wiping synced data so a pull that's already
+// mid-flight can't finish AFTER the wipe and write the old account's rows back to disk for a
+// space whose row is already gone (Task 17 fix round 1, issue 3). The bound (fix round 2, issue
+// 1) exists so a stalled sync can never hang the caller (e.g. authStore.signOut(), which the
+// cold-start sign-out path awaits before it can render the app) indefinitely; a run this gave up
+// waiting on is backstopped by syncPull's spaceExists() guard, which skips writing once the
+// target space is gone. Never rejects, even if the awaited run itself failed. Clears its timer
+// either way, so a fast-settling run never leaves a real timer dangling (open-handle-clean).
 export function awaitIdle(): Promise<void> {
-  return running
-    ? running.then(
-        () => undefined,
-        () => undefined,
-      )
-    : Promise.resolve()
+  const active = running
+  if (!active) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, IDLE_TIMEOUT_MS)
+    active.then(
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+    )
+  })
 }
 
 export function requestSync(delayMs = 2000): void {
