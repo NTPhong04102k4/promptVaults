@@ -29,6 +29,7 @@ jest.mock('@/lib/secureStorage', () => ({
 
 import { clearSyncedData } from '@/lib/accountData'
 import { type AccountProfile, getMe, logout } from '@/lib/authApi'
+import { LargeSecureStore } from '@/lib/secureStorage'
 import { awaitIdle, runSync } from '@/lib/syncEngine'
 import { getTokens, onTokensCleared } from '@/lib/tokenStore'
 
@@ -122,6 +123,28 @@ describe('auth actions', () => {
 
     expect(order).toEqual(['logout', 'awaitIdle', 'clearSyncedData'])
     expect(useAuthStore.getState().user).toBeNull()
+  })
+
+  // Task 17 fix round 3 (issue 1): apiClient has no request timeout, so logout()'s POST could
+  // hang forever on a stalled network. Every awaited step in signOut() needs a ceiling, not
+  // just the sync flush from round 2 — otherwise the app is stuck on the splash screen with
+  // no data leak but also no way out.
+  it('bounds a never-resolving logout() so sign-out still completes', async () => {
+    jest.useFakeTimers()
+    try {
+      ;(logout as jest.Mock).mockReturnValueOnce(new Promise(() => undefined)) // never settles
+      useAuthStore.getState().setUser(profile)
+
+      const done = useAuthStore.getState().signOut()
+      await jest.advanceTimersByTimeAsync(5000)
+      await done
+
+      expect(awaitIdle).toHaveBeenCalled()
+      expect(clearSyncedData).toHaveBeenCalled()
+      expect(useAuthStore.getState().user).toBeNull()
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it('startAuthListener loads /account/me when tokens exist', async () => {
@@ -270,7 +293,7 @@ describe('auth actions', () => {
       jest.useFakeTimers()
       try {
         ;(getTokens as jest.Mock).mockResolvedValue(tokens)
-        ;(runSync as jest.Mock).mockReturnValue(new Promise(() => undefined)) // never settles
+        ;(runSync as jest.Mock).mockReturnValueOnce(new Promise(() => undefined)) // never settles
         useAuthStore.setState({ user: toAuthUser(profile), keepSignedIn: false })
         await Promise.resolve()
         await useAuthStore.persist.rehydrate()
@@ -285,6 +308,41 @@ describe('auth actions', () => {
       } finally {
         jest.useRealTimers()
       }
+    })
+  })
+
+  // Task 17 fix round 3 (issue 2): before this task's fixes, a failure here still rendered
+  // the app (restoring didn't exist yet). Now that rendering is gated on restoreSession()
+  // finishing, any step that throws or hangs BEFORE reaching a branch that clears `restoring`
+  // must not lock the splash screen forever on every future launch.
+  describe('restoreSession never gets stuck, even on failure (fix round 3, issue 2)', () => {
+    it('clears restoring even when getTokens() throws (e.g. a SecureStore/keystore fault)', async () => {
+      ;(getTokens as jest.Mock).mockRejectedValue(new Error('keystore fault'))
+      await useAuthStore.persist.rehydrate()
+
+      startAuthListener()
+      await flush()
+
+      expect(useAuthStore.getState().restoring).toBe(false)
+    })
+
+    // Confirmed against the installed zustand version (src/store/authStore.ts comment): on a
+    // FAILED rehydrate, onRehydrateStorage's returned callback still runs (setting `hydrated:
+    // true` below) but onFinishHydration listeners never fire — awaiting that event, as the
+    // pre-fix code did, would hang restoreSession() (and therefore `restoring`) forever.
+    it('does not hang waiting on hydration when the persisted read fails', async () => {
+      useAuthStore.setState({ hydrated: false })
+      ;(LargeSecureStore.getItem as jest.Mock).mockRejectedValueOnce(new Error('keystore fault'))
+      ;(getTokens as jest.Mock).mockResolvedValue(null)
+
+      // restoreSession() starts waiting on `hydrated` (still false) right here.
+      startAuthListener()
+      // This attempt fails, but its postRehydrationCallback still fires and sets `hydrated`.
+      await useAuthStore.persist.rehydrate()
+      await flush()
+
+      expect(useAuthStore.getState().hydrated).toBe(true)
+      expect(useAuthStore.getState().restoring).toBe(false)
     })
   })
 

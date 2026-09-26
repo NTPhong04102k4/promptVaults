@@ -53,6 +53,31 @@ export function toAuthUser(profile: AccountProfile | null): AuthUser | null {
   }
 }
 
+// apiClient has no request timeout/AbortController, so any of signOut()'s network-dependent
+// steps (the best-effort flush, logout()'s server-side revoke) could otherwise hang on a
+// stalled network (captive portal, half-open connection) for as long as the OS TCP timeout —
+// Task 17 fix rounds 2 (the flush) and 3 (logout() itself; every awaited step needs a ceiling).
+const NETWORK_STEP_TIMEOUT_MS = 5000
+
+// Resolves with `promise`'s value (or undefined on timeout/rejection) after at most `ms`.
+// Clears its timer either way, so a fast-settling promise never leaves a real timer dangling.
+// Promise.resolve() also tolerates a non-promise/thenable input (e.g. a bare `jest.fn()` mock).
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise<T | undefined>((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms)
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(undefined)
+      },
+    )
+  })
+}
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
@@ -73,7 +98,12 @@ export const useAuthStore = create<AuthState>()(
       // closes the race where a sync already mid-flight would otherwise finish writing the
       // old account's rows back to disk after clearSyncedData() wipes them.
       signOut: async () => {
-        await logout()
+        // logout() already treats a failed/offline server-side revoke as best-effort and
+        // always clears local tokens itself (src/lib/authApi.ts) — but apiClient has no
+        // request timeout, so a stalled network could still hang the POST forever. Bounding
+        // it here means EVERY awaited step in signOut() now has a ceiling, not just the
+        // sync flush (Task 17 fix round 3, issue 1).
+        await withTimeout(logout(), NETWORK_STEP_TIMEOUT_MS)
         await awaitIdle()
         await clearSyncedData()
         set({ user: null })
@@ -105,68 +135,57 @@ export function startAuthListener(): () => void {
   return stop
 }
 
-// apiClient has no request timeout/AbortController, so the best-effort flush below could
-// otherwise hang on a stalled network (captive portal, half-open connection) for as long as the
-// OS TCP timeout — Task 17 fix round 2, issue 1.
-const COLD_START_FLUSH_TIMEOUT_MS = 5000
-
-// Resolves with `promise`'s value (or undefined on timeout/rejection) after at most `ms`.
-// Clears its timer either way, so a fast-settling promise never leaves a real timer dangling.
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
-  return new Promise<T | undefined>((resolve) => {
-    const timer = setTimeout(() => resolve(undefined), ms)
-    promise.then(
-      (value) => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      () => {
-        clearTimeout(timer)
-        resolve(undefined)
-      },
-    )
-  })
-}
-
 async function restoreSession(): Promise<void> {
-  if (!useAuthStore.persist.hasHydrated()) {
-    await new Promise<void>((resolve) => {
-      const unsubscribe = useAuthStore.persist.onFinishHydration(() => {
-        unsubscribe()
-        resolve()
+  // The ENTIRE body is wrapped so `restoring` reliably clears no matter which step throws —
+  // e.g. getTokens() faulting (SecureStore/Android keystore issues happen for real) — or which
+  // branch runs. Before this task's fixes any such failure still rendered the app; leaving it
+  // ungated now would otherwise lock the splash screen forever on every future launch (Task 17
+  // fix round 3, issue 2).
+  try {
+    if (!useAuthStore.getState().hydrated) {
+      // Waits on the store's own `hydrated` flag rather than persist's onFinishHydration: on a
+      // FAILED rehydrate (e.g. a corrupt/inaccessible SecureStore entry), zustand still invokes
+      // onRehydrateStorage's returned callback (which sets `hydrated: true` below) but never
+      // fires onFinishHydration listeners — awaiting that event would hang here forever
+      // (confirmed against the installed zustand version; fix round 3, issue 2).
+      await new Promise<void>((resolve) => {
+        const unsubscribe = useAuthStore.subscribe((state) => {
+          if (state.hydrated) {
+            unsubscribe()
+            resolve()
+          }
+        })
       })
-    })
-  }
-  const tokens = await getTokens()
-  if (!tokens) {
-    useAuthStore.setState({ user: null, restoring: false })
-    return
-  }
-  if (!useAuthStore.getState().keepSignedIn) {
-    // `restoring` stays true across this whole branch: _layout.tsx must not render — and
-    // expose the previous account's still-live user/spaces/prompts — until the sign-out
-    // (and its wipe) has resolved, one way or another (fix round 2, issue 1).
-    try {
+    }
+    const tokens = await getTokens()
+    if (!tokens) {
+      useAuthStore.setState({ user: null })
+      return
+    }
+    if (!useAuthStore.getState().keepSignedIn) {
       // Tokens are still valid here (signOut() below revokes them), so make a best-effort,
       // TIME-BOUNDED attempt to flush pending outbox rows before they're wiped. Never block
       // sign-out on this and never let a failure (offline, server error, timeout) stop it.
-      await withTimeout(runSync(), COLD_START_FLUSH_TIMEOUT_MS)
+      await withTimeout(runSync(), NETWORK_STEP_TIMEOUT_MS)
       // Cold start with "keep me signed in" off: go through the same shared sign-out
-      // seam as an explicit logout (ruling P3). signOut() itself bounds how long it waits
-      // for that same flush (awaitIdle()), so it completes even if the flush timed out here.
+      // seam as an explicit logout (ruling P3). signOut() itself bounds every one of its
+      // network-dependent steps, so it completes even if this flush timed out.
       await useAuthStore.getState().signOut()
-    } finally {
-      useAuthStore.setState({ restoring: false })
+      return
     }
-    return
-  }
-  // Normal "stay signed in" cold start: nothing to hide, so let the UI render right away —
-  // refreshUser() below finishes in the background, same as before this fix round.
-  useAuthStore.setState({ restoring: false })
-  try {
-    await useAuthStore.getState().refreshUser()
-  } catch {
-    // Offline: keep the persisted user. An expired session clears it via onTokensCleared.
+    // Normal "stay signed in" cold start: nothing to hide, so let the UI render right away —
+    // refreshUser() below finishes in the background, unaffected by the outer finally below.
+    useAuthStore.setState({ restoring: false })
+    try {
+      await useAuthStore.getState().refreshUser()
+    } catch {
+      // Offline: keep the persisted user. An expired session clears it via onTokensCleared.
+    }
+  } finally {
+    // `restoring` stays true for the whole keepSignedIn=false branch above (so _layout.tsx
+    // never renders the previous account's still-live data — fix round 2, issue 1); every
+    // other path already cleared it explicitly, so this is a harmless no-op there.
+    useAuthStore.setState({ restoring: false })
   }
 }
 
