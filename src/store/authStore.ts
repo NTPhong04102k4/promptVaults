@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 
+import { clearSyncedData } from '@/lib/accountData'
 import { type AccountProfile, getMe, logout } from '@/lib/authApi'
 import { LargeSecureStore } from '@/lib/secureStorage'
+import { awaitIdle, runSync } from '@/lib/syncEngine'
 import { getTokens, onTokensCleared } from '@/lib/tokenStore'
 
 // Tokens live in src/lib/tokenStore (SecureStore) — this store only keeps what the UI
@@ -61,10 +63,14 @@ export const useAuthStore = create<AuthState>()(
       completeOnboarding: () => set({ hasOnboarded: true }),
       setKeepSignedIn: (keep) => set({ keepSignedIn: keep }),
       // Single shared sign-out seam: explicit logout AND the keepSignedIn=false cold-start
-      // sign-out both go through this function (ruling P3). Task 17 will extend it with the
-      // synced-data wipe + space reset — keep this the one place that happens.
+      // sign-out both go through this function (ruling P3), and this is the ONE place the
+      // synced-data wipe happens (Task 17) — never duplicate it at a call site. awaitIdle()
+      // closes the race where a sync already mid-flight would otherwise finish writing the
+      // old account's rows back to disk after clearSyncedData() wipes them.
       signOut: async () => {
         await logout()
+        await awaitIdle()
+        await clearSyncedData()
         set({ user: null })
       },
     }),
@@ -109,6 +115,10 @@ async function restoreSession(): Promise<void> {
     return
   }
   if (!useAuthStore.getState().keepSignedIn) {
+    // Tokens are still valid here (signOut() below revokes them), so make a best-effort
+    // attempt to flush pending outbox rows before they're wiped. Never block sign-out on
+    // this and never let a failure (offline, server error) stop it.
+    await runSync().catch(() => undefined)
     // Cold start with "keep me signed in" off: go through the same shared sign-out
     // seam as an explicit logout (ruling P3).
     await useAuthStore.getState().signOut()

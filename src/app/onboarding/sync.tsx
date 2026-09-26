@@ -56,14 +56,20 @@ export default function SyncScreen() {
   async function handleAdopt() {
     if (!personal) return
     setPhase('working')
-    const adopted = await adoptLocalPrompts(personal.id)
-    const summary = await runSync()
-    setMessage(
-      summary.errors > 0
-        ? `Đã chuyển ${adopted} prompt vào Kho cá nhân. Sẽ tải lên khi có mạng.`
-        : `Đã đưa ${adopted} prompt lên Kho cá nhân.`,
-    )
-    setPhase('done')
+    try {
+      const adopted = await adoptLocalPrompts(personal.id)
+      const summary = await runSync()
+      setMessage(
+        summary.errors > 0
+          ? `Đã chuyển ${adopted} prompt vào Kho cá nhân. Sẽ tải lên khi có mạng.`
+          : `Đã đưa ${adopted} prompt lên Kho cá nhân.`,
+      )
+      setPhase('done')
+    } catch {
+      // P13: never leave the screen stuck on the spinner — the local rows are untouched.
+      setMessage('Không thể chuyển prompt lúc này. Prompt vẫn được lưu trên máy này.')
+      setPhase('error')
+    }
   }
 
   function handleLater() {

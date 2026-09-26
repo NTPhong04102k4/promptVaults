@@ -89,6 +89,15 @@ function categoryResolver(spaceId: string): (categoryId: string | null) => Promi
   }
 }
 
+// Task 17 fix round 1 (issue 3): the space may have been wiped (e.g. a sign-out) while this
+// pull's network round trip was in flight. Never resurrect its rows once the space itself is
+// gone — awaitIdle() in the sign-out path already closes most of this race; this is the cheap
+// second guard for whatever's left.
+async function spaceExists(db: SQLiteDatabase, spaceId: string): Promise<boolean> {
+  const row = await db.getFirstAsync<{ id: string }>('SELECT id FROM spaces WHERE id = ?', spaceId)
+  return row !== null
+}
+
 export async function getCursor(spaceId: string): Promise<number> {
   const db = await getDb()
   const row = await db.getFirstAsync<{ cursor: number }>(
@@ -175,6 +184,7 @@ async function applySnapshot(db: SQLiteDatabase, spaceId: string, response: Pull
 
   let applied = 0
   await db.withTransactionAsync(async () => {
+    if (!(await spaceExists(db, spaceId))) return
     const keep = new Set(prompts.map((p) => p.promptId.toLowerCase()))
     const local = await db.getAllAsync<{ id: string }>('SELECT id FROM prompts WHERE space_id = ?', spaceId)
     for (const { id } of local) {
@@ -236,6 +246,7 @@ export async function pullSpace(spaceId: string): Promise<{ applied: number; sna
 
   let applied = 0
   await db.withTransactionAsync(async () => {
+    if (!(await spaceExists(db, spaceId))) return
     for (const change of prepared) {
       if (await isLocked(db, change.id)) continue
       if (change.deleted) {

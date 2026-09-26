@@ -109,6 +109,29 @@ describe('pullSpace (snapshot — since = 0 always returns one)', () => {
     expect(await getCursor(SPACE)).toBe(900)
   })
 
+  // Task 17 fix round 1 (issue 3): simulates a sign-out wiping the space row while this pull's
+  // network round trip was already in flight.
+  it('skips writing when the space was removed mid-pull (e.g. a concurrent sign-out)', async () => {
+    const db = await getDb()
+    await db.runAsync('DELETE FROM spaces WHERE id = ?', SPACE)
+    get.mockResolvedValue({
+      isSnapshot: true,
+      changes: [],
+      resumeCursor: 900,
+      snapshotJson: JSON.stringify({
+        Prompts: [
+          { PromptId: 'x', Title: 'T', Content: 'C', Description: null, CategoryId: null, Version: 1, Tags: [], Variables: [] },
+        ],
+      }),
+    })
+
+    const result = await pullSpace(SPACE)
+
+    expect(result).toEqual({ applied: 0, snapshot: true })
+    expect(await db.getFirstAsync('SELECT id FROM prompts')).toBeNull()
+    expect(await getCursor(SPACE)).toBe(0)
+  })
+
   it('never touches prompts with pending changes or an open conflict', async () => {
     await seed('pending', 'Mine', 1)
     await seed('conflicted', 'Mine too', 1)
@@ -300,6 +323,21 @@ describe('pullSpace (incremental)', () => {
 
     expect(await db.getFirstAsync("SELECT title FROM prompts WHERE id = 'p1'")).toEqual({ title: 'Mine' })
     expect(await getCursor(SPACE)).toBe(13)
+  })
+
+  // Task 17 fix round 1 (issue 3): same guard as the snapshot path, for an incremental pull.
+  it('skips writing and does not advance the cursor when the space was removed mid-pull', async () => {
+    const db = await getDb()
+    await db.runAsync('DELETE FROM spaces WHERE id = ?', SPACE)
+    get.mockResolvedValue(
+      incremental(42, [change(42, 'p1', 3, { title: 'T', content: 'C' }, { operation: 'insert' })]),
+    )
+
+    const result = await pullSpace(SPACE)
+
+    expect(result).toEqual({ applied: 0, snapshot: false })
+    expect(await db.getFirstAsync('SELECT id FROM prompts')).toBeNull()
+    expect(await getCursor(SPACE)).toBe(10)
   })
 
   it('skips a prompt with an open conflict but still advances the cursor', async () => {

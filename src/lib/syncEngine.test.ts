@@ -20,10 +20,12 @@ import { ApiError } from '@/services/apiClient'
 
 import { getDb } from './db'
 import { fetchAndStoreMySpaces } from './spaces'
-import { runSync } from './syncEngine'
+import { awaitIdle, runSync } from './syncEngine'
 import { pullSpace } from './syncPull'
 import { pushSpace } from './syncPush'
 import { getTokens } from './tokenStore'
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 const idle = { applied: 0, conflicts: 0, rejected: 0, remaining: false }
 
@@ -80,5 +82,44 @@ describe('runSync', () => {
     const summary = await runSync()
     expect(summary.errors).toBe(1)
     expect(pullSpace).toHaveBeenCalledWith('s2')
+  })
+})
+
+// Task 17 fix round 1 (issue 3): the sign-out path awaits this so a pull already in flight
+// can't finish writing a wiped account's data back to disk after clearSyncedData() runs.
+describe('awaitIdle', () => {
+  it('resolves immediately when nothing is running', async () => {
+    await expect(awaitIdle()).resolves.toBeUndefined()
+  })
+
+  it('waits for an in-flight run to settle before resolving', async () => {
+    let resolvePull!: (value: { applied: number; snapshot: boolean }) => void
+    ;(pullSpace as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePull = resolve
+        }),
+    )
+
+    const sync = runSync()
+    let settled = false
+    const idlePromise = awaitIdle().then(() => {
+      settled = true
+    })
+
+    await flush()
+    expect(settled).toBe(false)
+
+    resolvePull({ applied: 0, snapshot: false })
+    await sync
+    await idlePromise
+    expect(settled).toBe(true)
+  })
+
+  it('never rejects even when the awaited run fails outright', async () => {
+    ;(getTokens as jest.Mock).mockRejectedValueOnce(new Error('boom'))
+    const sync = runSync().catch(() => undefined)
+    await expect(awaitIdle()).resolves.toBeUndefined()
+    await sync
   })
 })

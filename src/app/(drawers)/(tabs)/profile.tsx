@@ -1,7 +1,7 @@
 import { Alert, Pressable, Text, View } from 'react-native'
 
 import { Avatar, SettingsRow } from '@/components/ui'
-import { clearSyncedData, pendingChanges } from '@/lib/accountData'
+import { pendingChanges } from '@/lib/accountData'
 import { getDisplayName, getInitials } from '@/lib/format'
 import { runSync } from '@/lib/syncEngine'
 import { push, replace } from '@/navigation'
@@ -13,10 +13,12 @@ export default function ProfileScreen() {
   const user = useAuthStore((state) => state.user)
   const signOut = useAuthStore((state) => state.signOut)
 
+  // signOut() is the single sign-out seam — it wipes synced data and resets the space
+  // itself (Task 17 fix round 1, issue 1). This handler only owns the unsynced-changes
+  // confirmation in front of it.
   async function handleSignOut() {
     const finish = async () => {
       await signOut()
-      await clearSyncedData()
       replace('welcome')
     }
     const pending = await pendingChanges()

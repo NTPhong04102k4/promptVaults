@@ -64,6 +64,19 @@ export function runSync(): Promise<SyncSummary> {
   return running
 }
 
+// Resolves once no doSync() run is currently in flight. The sign-out path awaits this before
+// wiping synced data so a pull that's already mid-flight can't finish AFTER the wipe and write
+// the old account's rows back to disk for a space whose row is already gone (Task 17 fix round
+// 1, issue 3). Never rejects, even if the awaited run itself failed.
+export function awaitIdle(): Promise<void> {
+  return running
+    ? running.then(
+        () => undefined,
+        () => undefined,
+      )
+    : Promise.resolve()
+}
+
 export function requestSync(delayMs = 2000): void {
   if (timer) clearTimeout(timer)
   timer = setTimeout(() => {
