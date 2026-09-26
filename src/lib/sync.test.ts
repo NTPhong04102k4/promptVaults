@@ -9,9 +9,9 @@ jest.mock('./supabase', () => ({
   },
 }));
 
-import { getDb } from './db';
+import { getDb, PERSONAL_VAULT_ID } from './db';
 import { supabase } from './supabase';
-import { pushLocalPromptsToCloud } from './sync';
+import { pushLocalPromptsToCloud, pullCloudPromptsToLocal } from './sync';
 
 describe('pushLocalPromptsToCloud', () => {
   it('upserts unsynced rows and marks them synced', async () => {
@@ -65,9 +65,6 @@ describe('pushLocalPromptsToCloud', () => {
     expect(result).toEqual({ synced: 0, failed: 1 });
   });
 });
-
-import { PERSONAL_VAULT_ID } from './db';
-import { pullCloudPromptsToLocal } from './sync';
 
 describe('pullCloudPromptsToLocal', () => {
   it('inserts a cloud row that does not exist locally', async () => {
