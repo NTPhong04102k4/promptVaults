@@ -6,7 +6,29 @@
 import { ApiError } from '@/services/apiClient'
 
 import { runResolution, visibleResolutionButtons } from './conflictResolution'
-import type { ResolveOutcome } from './conflicts'
+import type { ConflictRecord, ResolveOutcome } from './conflicts'
+
+function makeConflict(overrides: Partial<ConflictRecord> = {}): ConflictRecord {
+  return {
+    conflictId: 'conflict-1',
+    spaceId: 'space-1',
+    promptId: 'prompt-1',
+    local: null,
+    remote: {
+      promptId: 'prompt-1',
+      title: 'Remote',
+      content: 'Remote content',
+      description: null,
+      categoryId: null,
+      categoryName: null,
+      version: 1,
+      isDeleted: false,
+    },
+    remoteVersion: 1,
+    createdAt: Date.now(),
+    ...overrides,
+  }
+}
 
 describe('runResolution', () => {
   function action(outcome: ResolveOutcome | Error) {
@@ -17,28 +39,41 @@ describe('runResolution', () => {
   }
 
   it('reports success and never refetches when the resolve is applied', async () => {
-    const refetch = jest.fn(async () => undefined)
+    const refetch = jest.fn(async () => null)
     const result = await runResolution(action('resolved'), refetch)
     expect(result).toEqual({ kind: 'success' })
     expect(refetch).not.toHaveBeenCalled()
   })
 
   it('reports forbidden and never refetches (the conflict record itself is unchanged)', async () => {
-    const refetch = jest.fn(async () => undefined)
+    const refetch = jest.fn(async () => null)
     const result = await runResolution(action('forbidden'), refetch)
     expect(result).toEqual({ kind: 'forbidden' })
     expect(refetch).not.toHaveBeenCalled()
   })
 
   it('re-fetches the current conflict state on requeued, so the screen never shows stale data', async () => {
-    const refetch = jest.fn(async () => undefined)
+    const refetch = jest.fn(async () => null)
     const result = await runResolution(action('requeued'), refetch)
-    expect(result).toEqual({ kind: 'requeued' })
+    expect(result).toEqual({ kind: 'requeued', stillOpen: false })
     expect(refetch).toHaveBeenCalledTimes(1)
   })
 
+  it('reports stillOpen: false when a requeue clears the conflict (requeue() deleted the row and refetch found nothing) — the screen must navigate away, not go blank', async () => {
+    const refetch = jest.fn(async () => null)
+    const result = await runResolution(action('requeued'), refetch)
+    expect(result).toEqual({ kind: 'requeued', stillOpen: false })
+  })
+
+  it('reports stillOpen: true when refetch finds a genuinely new conflict for the same prompt — the screen should show it, not navigate away', async () => {
+    const freshConflict = makeConflict({ conflictId: 'conflict-2' })
+    const refetch = jest.fn(async () => freshConflict)
+    const result = await runResolution(action('requeued'), refetch)
+    expect(result).toEqual({ kind: 'requeued', stillOpen: true })
+  })
+
   it('catches a thrown 422 (validation error) as a displayable error, not a crash', async () => {
-    const refetch = jest.fn(async () => undefined)
+    const refetch = jest.fn(async () => null)
     const error = new ApiError(422, 'ValidationError', 'Du lieu khong hop le.')
     const result = await runResolution(action(error), refetch)
     expect(result.kind).toBe('error')
@@ -46,7 +81,7 @@ describe('runResolution', () => {
   })
 
   it('catches a non-ApiError throw (e.g. offline) as a displayable error too', async () => {
-    const refetch = jest.fn(async () => undefined)
+    const refetch = jest.fn(async () => null)
     const result = await runResolution(action(new Error('offline')), refetch)
     expect(result.kind).toBe('error')
   })

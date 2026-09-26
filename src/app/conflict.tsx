@@ -39,6 +39,7 @@ export default function ConflictScreen() {
     ])
     setConflict(nextConflict)
     setLocal(nextLocal)
+    return nextConflict
   }, [promptId])
 
   useFocusEffect(
@@ -66,6 +67,10 @@ export default function ConflictScreen() {
           'Lựa chọn của bạn sẽ được đồng bộ lại. Nếu vẫn khác, bạn sẽ được hỏi lại.',
         )
         setMerging(false)
+        // The refetch inside runResolution already updated `conflict` state. If nothing came
+        // back, the conflict is gone (requeue() deleted the row) — leave the screen instead of
+        // rendering its blank null-conflict state. A genuinely new conflict is shown as-is.
+        if (!result.stillOpen) goBack('home')
         return
       case 'error':
         Alert.alert('Chưa giải quyết được', result.message)

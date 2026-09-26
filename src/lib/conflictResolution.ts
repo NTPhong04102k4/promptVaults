@@ -5,12 +5,12 @@
 
 import { toAuthError } from '@/lib/authForm'
 
-import type { ResolveOutcome } from './conflicts'
+import type { ConflictRecord, ResolveOutcome } from './conflicts'
 
 export type ResolveAttemptResult =
   | { kind: 'success' }
   | { kind: 'forbidden' }
-  | { kind: 'requeued' }
+  | { kind: 'requeued'; stillOpen: boolean }
   | { kind: 'error'; message: string }
 
 // Runs one resolution action (resolveKeepLocal/resolveKeepRemote/resolveMerged) and turns its
@@ -18,18 +18,22 @@ export type ResolveAttemptResult =
 // capture in `ResolveOutcome` — into a single result the screen can switch on.
 //
 // A 'requeued' outcome means the server moved on since the conflict was recorded (409/404):
-// the stored conflict row is gone, so the screen must re-fetch before showing anything again,
-// rather than keep displaying the now-stale conflict/local state it already has.
+// `requeue()` (conflicts.ts) deletes the stored conflict row as part of handling it, so the
+// screen must re-fetch before showing anything again, rather than keep displaying the now-stale
+// conflict/local state it already has. `stillOpen` tells the screen what the re-fetch found:
+// false means the conflict is simply gone (nothing left to show — the screen must navigate away,
+// not render its null-conflict blank state); true means a genuinely new conflict for the same
+// prompt showed up, which the screen should display normally instead of leaving.
 export async function runResolution(
   action: () => Promise<ResolveOutcome>,
-  refetch: () => Promise<void>,
+  refetch: () => Promise<ConflictRecord | null>,
 ): Promise<ResolveAttemptResult> {
   try {
     const outcome = await action()
     if (outcome === 'forbidden') return { kind: 'forbidden' }
     if (outcome === 'requeued') {
-      await refetch()
-      return { kind: 'requeued' }
+      const nextConflict = await refetch()
+      return { kind: 'requeued', stillOpen: nextConflict !== null }
     }
     return { kind: 'success' }
   } catch (e) {
