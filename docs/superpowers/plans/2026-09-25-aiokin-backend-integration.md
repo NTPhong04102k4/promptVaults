@@ -10,11 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-25-aiokin-backend-integration-design.md`
 
+> **Revision 2026-09-26.** Tasks 11–19 and 22–23 were corrected against the implemented backend (`AioKin` branch `feat/promptvault-merge` @ `49299e0`): push batch wrapper + `rejected` status, omit-means-unchanged category/tags/variables, inline PascalCase `snapshotJson`, typed pull change items, `newVersion`/`isDeleted` from resolve, author-or-manager authorization, enveloped biometric challenge. Every correction is listed with file/line evidence in spec §0; drift affecting already-implemented Tasks 1–10, 13, 20–21 is listed in spec §0.1 (not silently edited). **Decide spec drift D1 (prompt `description`) before implementing Task 14.**
+
 ## Global Constraints
 
 - **Read the versioned Expo docs before writing code** (`AGENTS.md`): https://docs.expo.dev/versions/v57.0.0/ — especially `expo-secure-store`, `expo-sqlite`, `expo-background-task`, `expo-task-manager`, `expo-network`.
 - **Backend contract is the AioKin repo, never guessed.** Routes/field names come from spec §4–§11 (which cite `AuthController.cs`, `AccountController.cs`, and the 2026-09-25 backend plans). If a backend response differs from what a task says, stop and update the spec, don't adapt silently.
-- **Raw (non-envelope) endpoints:** `POST /auth/login`, `POST /auth/refresh-token` (snake_case `TokenResponse`), `POST /auth/biometric/challenge`. Everything else the app calls is an `OperationResult` envelope.
+- **Raw (non-envelope) endpoints:** `POST /auth/login`, `POST /auth/refresh-token` (snake_case `TokenResponse`). Everything else the app calls — **including `POST /auth/biometric/challenge`** (corrected 2026-09-26, spec §0 C25) — is an `OperationResult` envelope.
+- **Sync never sends `deviceId`.** Push/pull/resolve take the device from the caller's session (spec §0 C4, C12).
 - **No client-specific endpoints may be requested.** Missing capabilities go to spec §15 "Backend gaps".
 - **Guest/local use is never gated behind login.** `LOCAL_SPACE_ID` always exists and works offline.
 - **Biometric app lock (`appLock.ts`, `biometric.ts`) keeps its current behaviour**; biometric *login* is separate code.
@@ -30,7 +33,10 @@
 - **Two authed requests hit 401 at the same time.** The backend rotates refresh tokens, so two refreshes log the user out. Expect exactly one `/auth/refresh-token` call — pinned in Task 3.
 - **Offline during refresh.** A network error while refreshing must not clear tokens (offline ≠ signed out) — pinned in Task 3.
 - **A prompt edited while its insert is in flight.** The edit must not be lost or merged into the in-flight row, and its `base_version` must follow the insert's `newVersion` — pinned in Tasks 13 and 14.
-- **Lost response to an insert, then retry.** B-SYN answers the retry with a conflict; identical content must auto-resolve instead of bothering the user — pinned in Task 14.
+- **Lost response to an insert, then retry.** The backend now answers an identical retried insert with `applied` (gap G10 closed); a conflict whose remote equals what we sent (e.g. the same edit on two devices) must still auto-resolve with `keep_remote` instead of bothering the user — pinned in Task 14.
+- **A push that "succeeds" with failed entries.** `/sync/push` returns 200 with a `SyncPushBatchResponse`; per-entry `rejected`/`conflict` must be read from `results[]`, and a generic `rejected` must be retried, not dropped — pinned in Task 14.
+- **Wiping data the app doesn't model.** The payload must omit `tags`/`variables` (omitted = unchanged, `[]` = clear) and only send `clearCategory: true` on an update whose category the user emptied — pinned in Task 14.
+- **Pull overwriting "your version" of an open conflict.** Pull must skip prompts with an open `sync_conflicts` row as well as pending outbox rows — pinned in Task 15.
 - **Upgrading a device that already has v2 data.** All prompts, favourites, copy counts and FTS search must survive the v3 rebuild — pinned in Task 9.
 
 ## Backend dependency map
@@ -39,10 +45,10 @@
 |---|---|
 | 1–8 | Nothing new — endpoints exist today (`AuthController`, `AccountController`). Device fields are sent early; ASP.NET ignores unknown properties until `2026-09-25-token-session-management.md` lands. |
 | 9–10, 13, 21 | Nothing (local only) |
-| 11–12 | `2026-09-25-promptvault-space-and-prompt-domain.md` merged and deployed |
-| 14–19 | `2026-09-25-promptvault-sync-engine.md` merged and deployed |
-| 20 | `2026-09-25-token-session-management.md` |
-| 22–23 | `2026-09-25-biometric-device-login.md` **and** spec gap G2 (`userCode` in `/account/me`) |
+| 11–12 | `2026-09-25-promptvault-space-and-prompt-domain.md` — merged on backend `feat/promptvault-merge` |
+| 14–19 | `2026-09-25-promptvault-sync-engine.md` — merged on backend `feat/promptvault-merge` (through `49299e0`) |
+| 20 | `2026-09-25-token-session-management.md` — merged |
+| 22–23 | `2026-09-25-biometric-device-login.md` — merged; spec gap G2 (`userCode` in `/account/me`) closed |
 | 24 | Nothing |
 
 ---
@@ -68,8 +74,8 @@
 | `src/store/spaceStore.ts` | `currentSpaceId`, `ownerUserId` | 12 |
 | `src/app/vault-switcher.tsx` | Space switcher | 12 |
 | `src/lib/outbox.ts` | enqueue/coalesce/claim/release | 13 |
-| `src/lib/syncPush.ts` | `/sync/push` | 14 |
-| `src/lib/syncPull.ts` | `/sync/pull` + snapshot fallback | 15 |
+| `src/lib/syncPush.ts` | `/sync/push`, payload building, `restorePromptFromServer` | 14 |
+| `src/lib/syncPull.ts` | `/sync/pull` (incremental + inline snapshot), category-name resolution | 15 |
 | `src/lib/syncEngine.ts`, `src/lib/backgroundSync.ts` | single-flight run + triggers | 16 |
 | `src/lib/accountData.ts` | sign-in preparation, adoption, sign-out wipe | 17 |
 | `src/lib/conflicts.ts`, `src/app/conflict.tsx` | resolve API + side-by-side UI | 18, 19 |
@@ -2485,7 +2491,9 @@ git commit -m "feat(sync): deterministic category ids per space"
 
 ### Task 11: Spaces — `/spaces/me`, `/spaces/team`, local mirror
 
-**Depends on:** `2026-09-25-promptvault-space-and-prompt-domain.md` (Task 4 `SpacesController`) deployed.
+**Depends on:** `2026-09-25-promptvault-space-and-prompt-domain.md` (`SpacesController`) deployed — merged on the backend.
+
+**Contract (verified 2026-09-26, spec §0 C23):** `GET /spaces/me` → envelope `data: SpaceResponse[]`; `POST /spaces/team { name }` (1–120 chars) → envelope `data: SpaceResponse` with `canManage: true` (creator is Owner); `SpaceResponse = { spaceUuid, spaceType: 'Personal'|'Family'|'Team', name, canManage, createdAtMillis }` (`AioKin/Models/ViewModel/Vault/SpaceResponse.cs`). The personal space is auto-created on `GET /spaces/me` and named `"Personal"`. Errors: `422 ValidationError` (bad name), `404 UserNotFound`. Member endpoints (`GET/POST /spaces/{uuid}/members`, `DELETE /spaces/{uuid}/members/{userUuid}`) exist but are out of scope for this plan.
 
 **Files:**
 - Create: `src/lib/spaces.ts`, `src/lib/spaces.test.ts`
@@ -2571,11 +2579,11 @@ describe('spaces', () => {
     expect(await fetchAndStoreMySpaces()).toHaveLength(1)
   })
 
-  it('creates a team space', async () => {
-    ;(apiClient.post as jest.Mock).mockResolvedValue(team)
+  it('creates a team space (the creator is Owner, so canManage is true)', async () => {
+    ;(apiClient.post as jest.Mock).mockResolvedValue({ ...team, canManage: true })
     const space = await createTeamSpace('Team A')
     expect(apiClient.post).toHaveBeenCalledWith('/spaces/team', { name: 'Team A' }, { auth: true })
-    expect(space).toEqual({ id: team.spaceUuid, kind: 'team', name: 'Team A', canManage: false, createdAt: 20 })
+    expect(space).toEqual({ id: team.spaceUuid, kind: 'team', name: 'Team A', canManage: true, createdAt: 20 })
   })
 
   it('wipeSyncedSpaces keeps only the local space and its prompts', async () => {
@@ -2618,7 +2626,7 @@ export type Space = {
   createdAt: number
 }
 
-// AioKin SpaceResponse (space-and-prompt-domain plan, Task 3 Step 2).
+// AioKin SpaceResponse (AioKin/Models/ViewModel/Vault/SpaceResponse.cs).
 type SpaceResponse = {
   spaceUuid: string
   spaceType: string
@@ -2975,6 +2983,8 @@ const useStyles = makeStyles(({ colors, spacing }) => ({
 
 (`Icon` names `lock`, `check`, `add`, `home` are already used in the app; `TextField.error` accepts `string | null | undefined`.)
 
+Note (2026-09-26, spec §0 C18): in family/team spaces where `canManage` is false the user may still create prompts and edit **their own**, but edits/deletes of other members' prompts are rejected by the server. The app cannot tell who authored a prompt (gap G13), so this task does not hide any edit UI; Task 14 restores the server copy when such an edit is rejected.
+
 - [ ] **Step 6: Verify** — `npx jest src/store && npx tsc --noEmit` → PASS. Manual: signed in → switcher lists "Trên máy này" and "Kho cá nhân"; creating "Team A" switches to it and Home is empty.
 
 - [ ] **Step 7: Commit**
@@ -2989,6 +2999,8 @@ git commit -m "feat(spaces): current-space store and AioKin space switcher"
 ### Task 13: Outbox and outbox-writing prompt mutations
 
 **Depends on:** Task 9 (local only).
+
+> **Already implemented** (commits `2235810`, `b4ae55d`). The shipped code differs from the text below in two ways that later tasks rely on (spec §0.1 D5): `completeRow(db, seq, newVersion?)` also rebases other queued, non-in-flight rows of the same prompt onto `newVersion`; `claimBatch` returns at most one row per prompt, never a row whose prompt already has one in flight, and skips prompts with `has_conflict = 1`. Tasks 14 and 18 are written against the shipped signatures. No backend contract change affects this task.
 
 **Files:**
 - Create: `src/lib/outbox.ts`, `src/lib/outbox.test.ts`
@@ -3359,20 +3371,30 @@ git commit -m "feat(sync): outbox with coalescing, written in the same transacti
 
 ### Task 14: Push — `POST /sync/push`
 
-**Depends on:** `2026-09-25-promptvault-sync-engine.md` Task 2 deployed.
+**Depends on:** `2026-09-25-promptvault-sync-engine.md` Task 2 — merged on the backend. Task 13 (implemented). **Blocking decision:** spec drift D1 (prompt `description`) — see the note under Step 3.
+
+**Contract (verified 2026-09-26 — spec §0 C1–C7, C18–C21; `AioKin/Models/InputModel/Vault/SyncPushRequest.cs`, `AioKin/Models/ViewModel/Vault/SyncPushBatchResponse.cs`, `SyncPushResponse.cs`, `AioKin/Services/Vault/SyncService.cs:63-810`):**
+- Request `{ spaceUuid, entities: [{ promptId, operation: 'insert'|'update'|'delete', baseVersion, payload | null }] }` — **no `deviceId`** (taken from the session).
+- `payload = { title, content, description, categoryId?, categoryName?, clearCategory?, tags?, variables? }`. Omitted `categoryId` = unchanged, `clearCategory: true` = clear; omitted `tags`/`variables` = unchanged, `[]` = **clear**. This app never sends `tags`/`variables`. `description` is always replaced.
+- Response envelope `data = { results: [{ promptId, status: 'applied'|'conflict'|'rejected', newVersion?, remote?, conflictId?, error? }], appliedCount, conflictCount, rejectedCount, hasFailures }` — 200 even when entries fail.
+- `remote` (conflict only) = `{ promptId, title, content, description, categoryId, categoryName: null, version, hasConflict, isDeleted, tags, variables }`.
+- `rejected`: permission (`error` starts with `"Ban khong co quyen"` — only the author or a `canManage` member may update/delete someone else's prompt) is permanent; any other `error` may be a transient server fault (gap G14) and must be retried.
+- Identical retried insert → `applied` with the existing `newVersion`; delete of an unknown prompt → `applied` without `newVersion`.
+- Whole request: `403 Forbidden` when the caller is not a member of the space.
 
 **Files:**
 - Create: `src/lib/syncPush.ts`, `src/lib/syncPush.test.ts`
+- Modify: `src/lib/outbox.ts` (`claimBatch` gains an optional `skipSeqs`), `src/lib/outbox.test.ts` (append)
 
 **Interfaces:**
-- Consumes: `claimBatch`, `completeRow`, `releaseRows`, `OutboxOperation` (Task 13); `categoryIdFor` (Task 10); `getDeviceId` (Task 2); `apiClient`.
-- Produces: `type PromptPayload = { title: string; content: string; description: string | null; categoryId: string | null; categoryName: string | null; tags: []; variables: [] }` (B-SYN `PromptPayload`); `type RemotePrompt = { promptId: string; title: string; content: string; description: string | null; version: number }` (B-SPC `PromptDetailResponse` subset); `buildPayload(spaceId, { title, content, category }): Promise<PromptPayload>`; `pushSpace(spaceId: string, batchSize?: number): Promise<{ applied: number; conflicts: number; remaining: boolean }>`.
+- Consumes: `claimBatch`, `completeRow(db, seq, newVersion?)`, `releaseRows`, `hasPending`, `OutboxOperation` (Task 13, as implemented); `categoryIdFor` (Task 10); `apiClient`.
+- Produces: `type PromptPayload = { title: string; content: string; description: string | null; categoryId?: string; categoryName?: string; clearCategory?: true }`; `type RemotePrompt = { promptId: string; title: string; content: string; description: string | null; categoryId: string | null; categoryName: string | null; version: number; isDeleted: boolean }`; `type ResolveResponse = { promptId: string; newVersion: number; isDeleted: boolean }`; `buildPayload(spaceId, { title, content, category }, mode: 'insert' | 'update'): Promise<PromptPayload>`; `forceSnapshot(db, spaceId): Promise<void>`; `PERMISSION_REJECTED_PREFIX`; `type PushOutcome = { applied: number; conflicts: number; rejected: number; remaining: boolean }`; `pushSpace(spaceId: string, options?: { batchSize?: number; skipSeqs?: Set<number> }): Promise<PushOutcome>`.
+- Changes (`outbox`): `claimBatch(db, spaceId, limit, skipSeqs: readonly number[] = [])`.
 
 - [ ] **Step 1: Write the failing tests** — `src/lib/syncPush.test.ts`:
 
 ```ts
 jest.mock('@/services/apiClient', () => ({ apiClient: { post: jest.fn() } }))
-jest.mock('./deviceIdentity', () => ({ getDeviceId: async () => 'dev-1' }))
 jest.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
   digestStringAsync: async (_a: string, value: string) =>
@@ -3389,13 +3411,43 @@ import { pushSpace } from './syncPush'
 const SPACE = 'aaaaaaaa-0000-4000-8000-000000000001'
 const post = apiClient.post as jest.Mock
 
-async function seedPrompt(id: string, version = 0) {
+// AioKin SyncPushBatchResponse (Models/ViewModel/Vault/SyncPushBatchResponse.cs).
+function batch(results: Array<Record<string, unknown>>) {
+  const count = (status: string) => results.filter((r) => r.status === status).length
+  return {
+    results,
+    appliedCount: count('applied'),
+    conflictCount: count('conflict'),
+    rejectedCount: count('rejected'),
+    hasFailures: count('conflict') + count('rejected') > 0,
+  }
+}
+
+function remote(overrides: Record<string, unknown> = {}) {
+  return {
+    promptId: 'p1',
+    title: 'Bản khác',
+    content: 'Khác',
+    description: null,
+    categoryId: null,
+    categoryName: null,
+    version: 2,
+    hasConflict: true,
+    isDeleted: false,
+    tags: [],
+    variables: [],
+    ...overrides,
+  }
+}
+
+async function seedPrompt(id: string, version = 0, category: string | null = 'Marketing') {
   const db = await getDb()
   await db.runAsync(
     `INSERT INTO prompts (id, space_id, title, content, category, created_at, updated_at, version)
-     VALUES (?, ?, 'Tiêu đề', 'Nội dung', 'Marketing', 1, 1, ?)`,
+     VALUES (?, ?, 'Tiêu đề', 'Nội dung', ?, 1, 1, ?)`,
     id,
     SPACE,
+    category,
     version,
   )
 }
@@ -3403,7 +3455,9 @@ async function seedPrompt(id: string, version = 0) {
 beforeEach(async () => {
   post.mockReset()
   const db = await getDb()
-  await db.execAsync('DELETE FROM prompts; DELETE FROM sync_outbox; DELETE FROM sync_conflicts;')
+  await db.execAsync(
+    'DELETE FROM prompts; DELETE FROM sync_outbox; DELETE FROM sync_conflicts; DELETE FROM sync_state;',
+  )
   await db.runAsync(
     "INSERT OR IGNORE INTO spaces (id, kind, name, can_manage, created_at) VALUES (?, 'personal', 'P', 1, 1)",
     SPACE,
@@ -3411,11 +3465,11 @@ beforeEach(async () => {
 })
 
 describe('pushSpace', () => {
-  it('sends the B-SYN request shape and applies the new version', async () => {
+  it('sends the AioKin request shape and applies newVersion from the batch response', async () => {
     const db = await getDb()
     await seedPrompt('p1')
     await enqueue(db, SPACE, 'p1', 'insert', 0)
-    post.mockResolvedValue([{ promptId: 'p1', status: 'applied', newVersion: 1 }])
+    post.mockResolvedValue(batch([{ promptId: 'p1', status: 'applied', newVersion: 1 }]))
 
     const outcome = await pushSpace(SPACE)
 
@@ -3423,7 +3477,6 @@ describe('pushSpace', () => {
       '/sync/push',
       {
         spaceUuid: SPACE,
-        deviceId: 'dev-1',
         entities: [
           {
             promptId: 'p1',
@@ -3435,30 +3488,58 @@ describe('pushSpace', () => {
               description: null,
               categoryId: await categoryIdFor(SPACE, 'Marketing'),
               categoryName: 'Marketing',
-              tags: [],
-              variables: [],
             },
           },
         ],
       },
       { auth: true },
     )
-    expect(outcome).toEqual({ applied: 1, conflicts: 0, remaining: false })
+    const body = post.mock.calls[0]![1]
+    expect(body).not.toHaveProperty('deviceId') // device comes from the session (spec §0 C4)
+    expect(body.entities[0].payload).not.toHaveProperty('tags') // omitted = unchanged (C6)
+    expect(body.entities[0].payload).not.toHaveProperty('variables')
+    expect(outcome).toEqual({ applied: 1, conflicts: 0, rejected: 0, remaining: false })
     expect(await db.getFirstAsync('SELECT version FROM prompts WHERE id = ?', 'p1')).toEqual({ version: 1 })
     expect(await db.getFirstAsync('SELECT seq FROM sync_outbox')).toBeNull()
   })
 
-  it('rebases an edit made while the insert was in flight', async () => {
+  it('clears the category only on an update whose category is empty', async () => {
+    const db = await getDb()
+    await seedPrompt('new', 0, null)
+    await seedPrompt('old', 3, null)
+    await enqueue(db, SPACE, 'new', 'insert', 0)
+    await enqueue(db, SPACE, 'old', 'update', 3)
+    post.mockResolvedValue(
+      batch([
+        { promptId: 'new', status: 'applied', newVersion: 1 },
+        { promptId: 'old', status: 'applied', newVersion: 4 },
+      ]),
+    )
+
+    await pushSpace(SPACE)
+
+    const [insert, update] = post.mock.calls[0]![1].entities
+    expect(insert.payload).toEqual({ title: 'Tiêu đề', content: 'Nội dung', description: null })
+    expect(update.payload).toEqual({
+      title: 'Tiêu đề',
+      content: 'Nội dung',
+      description: null,
+      clearCategory: true,
+    })
+  })
+
+  it('rebases an edit made while the insert was in flight and asks for another round', async () => {
     const db = await getDb()
     await seedPrompt('p1')
     await enqueue(db, SPACE, 'p1', 'insert', 0)
     post.mockImplementation(async () => {
       await enqueue(db, SPACE, 'p1', 'update', 0) // user edits during the request
-      return [{ promptId: 'p1', status: 'applied', newVersion: 1 }]
+      return batch([{ promptId: 'p1', status: 'applied', newVersion: 1 }])
     })
 
-    await pushSpace(SPACE)
+    const outcome = await pushSpace(SPACE)
 
+    expect(outcome.remaining).toBe(true)
     expect(await db.getAllAsync('SELECT operation, base_version FROM sync_outbox')).toEqual([
       { operation: 'update', base_version: 1 },
     ])
@@ -3468,51 +3549,98 @@ describe('pushSpace', () => {
     const db = await getDb()
     await seedPrompt('p1', 1)
     await enqueue(db, SPACE, 'p1', 'update', 1)
-    post.mockResolvedValue([
-      {
-        promptId: 'p1',
-        status: 'conflict',
-        conflictId: 'c-1',
-        remote: { promptId: 'p1', title: 'Bản khác', content: 'Khác', description: null, version: 2 },
-      },
-    ])
+    post.mockResolvedValue(batch([{ promptId: 'p1', status: 'conflict', conflictId: 'c-1', remote: remote() }]))
 
     const outcome = await pushSpace(SPACE)
 
     expect(outcome.conflicts).toBe(1)
-    const conflict = await db.getFirstAsync<{ remote_version: number; local_payload: string }>(
-      "SELECT remote_version, local_payload FROM sync_conflicts WHERE conflict_id = 'c-1'",
+    const conflict = await db.getFirstAsync<{ remote_version: number; local_payload: string; remote_payload: string }>(
+      "SELECT remote_version, local_payload, remote_payload FROM sync_conflicts WHERE conflict_id = 'c-1'",
     )
     expect(conflict?.remote_version).toBe(2)
     expect(JSON.parse(conflict!.local_payload).title).toBe('Tiêu đề')
+    expect(JSON.parse(conflict!.remote_payload).isDeleted).toBe(false)
     expect(await db.getFirstAsync('SELECT has_conflict FROM prompts WHERE id = ?', 'p1')).toEqual({ has_conflict: 1 })
   })
 
-  it('auto-resolves a conflict whose remote content is what we sent (retried insert)', async () => {
+  it('auto-resolves a conflict whose remote already holds exactly what we sent', async () => {
     const db = await getDb()
-    await seedPrompt('p1')
-    await enqueue(db, SPACE, 'p1', 'insert', 0)
+    await seedPrompt('p1', 1)
+    await enqueue(db, SPACE, 'p1', 'update', 1)
     post
-      .mockResolvedValueOnce([
-        {
-          promptId: 'p1',
-          status: 'conflict',
-          conflictId: 'c-2',
-          remote: { promptId: 'p1', title: 'Tiêu đề', content: 'Nội dung', description: null, version: 1 },
-        },
-      ])
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(
+        batch([
+          {
+            promptId: 'p1',
+            status: 'conflict',
+            conflictId: 'c-2',
+            remote: remote({ title: 'Tiêu đề', content: 'Nội dung', categoryId: await categoryIdFor(SPACE, 'Marketing'), version: 2 }),
+          },
+        ]),
+      )
+      .mockResolvedValueOnce({ promptId: 'p1', newVersion: 2, isDeleted: false }) // ResolveConflictResponse
 
     const outcome = await pushSpace(SPACE)
 
-    expect(post).toHaveBeenLastCalledWith(
-      '/sync/conflicts/c-2/resolve',
-      { resolution: 'keep_remote' },
-      { auth: true },
-    )
-    expect(outcome).toEqual({ applied: 1, conflicts: 0, remaining: false })
+    expect(post).toHaveBeenLastCalledWith('/sync/conflicts/c-2/resolve', { resolution: 'keep_remote' }, { auth: true })
+    expect(outcome).toMatchObject({ applied: 1, conflicts: 0 })
     expect(await db.getFirstAsync('SELECT conflict_id FROM sync_conflicts')).toBeNull()
-    expect(await db.getFirstAsync('SELECT version FROM prompts WHERE id = ?', 'p1')).toEqual({ version: 1 })
+    expect(await db.getFirstAsync('SELECT version, has_conflict FROM prompts WHERE id = ?', 'p1')).toEqual({
+      version: 2,
+      has_conflict: 0,
+    })
+  })
+
+  it('auto-resolves our delete against a prompt that is already deleted remotely', async () => {
+    const db = await getDb()
+    await enqueue(db, SPACE, 'gone', 'delete', 1)
+    post
+      .mockResolvedValueOnce(
+        batch([{ promptId: 'gone', status: 'conflict', conflictId: 'c-3', remote: remote({ promptId: 'gone', isDeleted: true }) }]),
+      )
+      .mockResolvedValueOnce({ promptId: 'gone', newVersion: 2, isDeleted: true })
+
+    const outcome = await pushSpace(SPACE)
+
+    expect(outcome).toMatchObject({ applied: 1, conflicts: 0 })
+    expect(await db.getFirstAsync('SELECT seq FROM sync_outbox')).toBeNull()
+    expect(await db.getFirstAsync('SELECT conflict_id FROM sync_conflicts')).toBeNull()
+  })
+
+  it('a permission rejection drops the row and forces a snapshot to restore the server copy', async () => {
+    const db = await getDb()
+    await seedPrompt('p1', 3)
+    await db.runAsync("INSERT INTO sync_state (space_id, cursor) VALUES (?, 77)", SPACE)
+    await enqueue(db, SPACE, 'p1', 'update', 3)
+    post.mockResolvedValue(
+      batch([{ promptId: 'p1', status: 'rejected', error: 'Ban khong co quyen sua prompt nay.' }]),
+    )
+
+    const outcome = await pushSpace(SPACE)
+
+    expect(outcome).toMatchObject({ applied: 0, rejected: 1, remaining: false })
+    expect(await db.getFirstAsync('SELECT seq FROM sync_outbox')).toBeNull()
+    expect(await db.getFirstAsync('SELECT cursor FROM sync_state WHERE space_id = ?', SPACE)).toEqual({ cursor: 0 })
+  })
+
+  it('any other rejection keeps the row for a later run and skips it for the rest of this run', async () => {
+    const db = await getDb()
+    await seedPrompt('p1')
+    await enqueue(db, SPACE, 'p1', 'insert', 0)
+    post.mockResolvedValue(batch([{ promptId: 'p1', status: 'rejected', error: 'Khong the ap dung thay doi nay.' }]))
+    const skipSeqs = new Set<number>()
+
+    const first = await pushSpace(SPACE, { skipSeqs })
+    const second = await pushSpace(SPACE, { skipSeqs })
+
+    expect(first.rejected).toBe(1)
+    expect(second).toEqual({ applied: 0, conflicts: 0, rejected: 0, remaining: false })
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(await db.getFirstAsync('SELECT in_flight, attempts, last_error FROM sync_outbox')).toEqual({
+      in_flight: 0,
+      attempts: 1,
+      last_error: 'rejected: Khong the ap dung thay doi nay.',
+    })
   })
 
   it('releases the batch and rethrows when the request fails', async () => {
@@ -3528,14 +3656,14 @@ describe('pushSpace', () => {
     })
   })
 
-  it('holds back edits to a prompt with an unresolved conflict', async () => {
+  it('holds back a locally deleted prompt that has an unresolved conflict', async () => {
     const db = await getDb()
-    await seedPrompt('p1', 1)
+    // No prompts row (deleted locally), so claimBatch's has_conflict filter can't see the conflict.
     await db.runAsync(
-      "INSERT INTO sync_conflicts (conflict_id, space_id, prompt_id, local_payload, remote_payload, remote_version, created_at) VALUES ('c-3', ?, 'p1', NULL, '{}', 2, 1)",
+      "INSERT INTO sync_conflicts (conflict_id, space_id, prompt_id, local_payload, remote_payload, remote_version, created_at) VALUES ('c-4', ?, 'p1', NULL, '{}', 2, 1)",
       SPACE,
     )
-    await enqueue(db, SPACE, 'p1', 'update', 1)
+    await enqueue(db, SPACE, 'p1', 'delete', 1)
 
     const outcome = await pushSpace(SPACE)
 
@@ -3546,9 +3674,63 @@ describe('pushSpace', () => {
 })
 ```
 
-- [ ] **Step 2: Run to verify failure** — `npx jest src/lib/syncPush.test.ts` → FAIL (module not found).
+Append to `src/lib/outbox.test.ts`:
 
-- [ ] **Step 3: Write `src/lib/syncPush.ts`**
+```ts
+describe('claimBatch skipSeqs', () => {
+  it('never returns a skipped row, nor a later row of the same prompt', async () => {
+    const db = await getDb()
+    await enqueue(db, 's', 'a', 'insert', 0)
+    await enqueue(db, 's', 'b', 'insert', 0)
+    const [a] = await claimBatch(db, 's', 1)
+    await releaseRows(db, [a!.seq], 'rejected: x')
+
+    const batch = await claimBatch(db, 's', 50, [a!.seq])
+
+    expect(batch.map((r) => r.prompt_id)).toEqual(['b'])
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify failure** — `npx jest src/lib/syncPush.test.ts src/lib/outbox.test.ts` → FAIL (module not found / extra argument ignored).
+
+- [ ] **Step 3: `claimBatch` skip list** — in `src/lib/outbox.ts` (run `impact({target: "claimBatch", direction: "upstream"})` first), give `claimBatch` a fourth parameter and splice it into the existing query; everything else stays as implemented:
+
+```ts
+export async function claimBatch(
+  db: SQLiteDatabase,
+  spaceId: string,
+  limit: number,
+  // Rows already rejected earlier in this sync run (Task 16 passes one set per space per run).
+  skipSeqs: readonly number[] = [],
+): Promise<OutboxRow[]> {
+  const skip = skipSeqs.length > 0 ? `AND o.seq NOT IN (${skipSeqs.map(() => '?').join(', ')})` : ''
+  const rows = await db.getAllAsync<OutboxRow>(
+    `SELECT o.seq, o.space_id, o.prompt_id, o.operation, o.base_version, o.attempts
+     FROM sync_outbox o
+     LEFT JOIN prompts p ON p.id = o.prompt_id
+     WHERE o.space_id = ? AND o.in_flight = 0 AND COALESCE(p.has_conflict, 0) = 0 ${skip}
+       AND NOT EXISTS (
+         SELECT 1 FROM sync_outbox o2
+         WHERE o2.prompt_id = o.prompt_id AND (o2.in_flight = 1 OR o2.seq < o.seq)
+       )
+     ORDER BY o.seq LIMIT ?`,
+    spaceId,
+    ...skipSeqs,
+    limit,
+  )
+  for (const row of rows) {
+    await db.runAsync('UPDATE sync_outbox SET in_flight = 1 WHERE seq = ?', row.seq)
+  }
+  return rows
+}
+```
+
+(The `NOT EXISTS … o2.seq < o.seq` clause already keeps a later row of a skipped prompt back, so per-prompt ordering holds.)
+
+> **Description (spec drift D1) — decide before writing Step 4.** The server replaces `description` on every update, and schema v3 has no `description` column, so the code below sends `description: null`, which **erases** a description written by the web/Kotlin client whenever the prompt is edited on the app. Recommended: first add a schema v4 migration (`ALTER TABLE prompts ADD COLUMN description TEXT`, `PRAGMA user_version = 4`) as its own task, then read `description` here and write it in Task 15/18. If the user accepts the loss instead, keep the code as written.
+
+- [ ] **Step 4: Write `src/lib/syncPush.ts`**
 
 ```ts
 import type { SQLiteDatabase } from 'expo-sqlite'
@@ -3557,29 +3739,36 @@ import { apiClient } from '@/services/apiClient'
 
 import { categoryIdFor } from './categoryId'
 import { getDb } from './db'
-import { getDeviceId } from './deviceIdentity'
-import { claimBatch, completeRow, type OutboxOperation, releaseRows } from './outbox'
+import { claimBatch, completeRow, hasPending, type OutboxOperation, releaseRows } from './outbox'
 
-// sync-engine plan Task 2: PromptPayload. Tags/variables are not modelled by this app
-// (spec gap G12) and are always sent empty.
+// AioKin PromptPayload (Models/InputModel/Vault/SyncPushRequest.cs). Absent keys mean
+// "leave unchanged" on the server: tags/variables are never sent (no UI for them, and []
+// would wipe them); categoryId/categoryName only when a category is set; clearCategory only
+// on an update whose category is empty (spec §0 C5–C7).
 export type PromptPayload = {
   title: string
   content: string
-  description: string | null
-  categoryId: string | null
-  categoryName: string | null
-  tags: []
-  variables: []
+  description: string | null // always null until spec drift D1 is decided
+  categoryId?: string
+  categoryName?: string
+  clearCategory?: true
 }
 
-// Subset of PromptDetailResponse returned as SyncPushResponse.remote.
+// PromptDetailResponse sent as SyncPushResponse.remote (conflicts only). categoryName is
+// always null here — only categoryId is filled (spec §0 C19).
 export type RemotePrompt = {
   promptId: string
   title: string
   content: string
   description: string | null
+  categoryId: string | null
+  categoryName: string | null
   version: number
+  isDeleted: boolean
 }
+
+// AioKin ResolveConflictResponse (Models/ViewModel/Vault/ResolveConflictResponse.cs).
+export type ResolveResponse = { promptId: string; newVersion: number; isDeleted: boolean }
 
 type PushEntry = {
   promptId: string
@@ -3590,34 +3779,56 @@ type PushEntry = {
 
 type PushResult = {
   promptId: string
-  status: 'applied' | 'conflict'
+  status: 'applied' | 'conflict' | 'rejected'
   newVersion?: number | null
   remote?: RemotePrompt | null
   conflictId?: string | null
+  error?: string | null
 }
 
-export type PushOutcome = { applied: number; conflicts: number; remaining: boolean }
+type PushBatchResponse = {
+  results: PushResult[]
+  appliedCount: number
+  conflictCount: number
+  rejectedCount: number
+  hasFailures: boolean
+}
+
+export type PushOutcome = { applied: number; conflicts: number; rejected: number; remaining: boolean }
+
+// SyncService rejects edits/deletes of someone else's prompt by a non-manager with
+// "Ban khong co quyen sua/xoa prompt nay." — permanent. Every other rejection may be a
+// transient server fault (spec §0 C3, gap G14), so it is retried on a later run.
+export const PERMISSION_REJECTED_PREFIX = 'Ban khong co quyen'
 
 export async function buildPayload(
   spaceId: string,
   prompt: { title: string; content: string; category: string | null },
+  mode: 'insert' | 'update',
 ): Promise<PromptPayload> {
-  return {
-    title: prompt.title,
-    content: prompt.content,
-    description: null,
-    categoryId: prompt.category ? await categoryIdFor(spaceId, prompt.category) : null,
-    categoryName: prompt.category,
-    tags: [],
-    variables: [],
+  const payload: PromptPayload = { title: prompt.title, content: prompt.content, description: null }
+  if (prompt.category) {
+    payload.categoryId = await categoryIdFor(spaceId, prompt.category)
+    payload.categoryName = prompt.category
+  } else if (mode === 'update') {
+    payload.clearCategory = true
   }
+  return payload
+}
+
+// The next pull of this space returns a full snapshot (since = 0 always does, spec §0 C10),
+// which overwrites every prompt that has no pending row or open conflict.
+export async function forceSnapshot(db: SQLiteDatabase, spaceId: string): Promise<void> {
+  await db.runAsync('UPDATE sync_state SET cursor = 0 WHERE space_id = ?', spaceId)
 }
 
 function sameContent(sent: PromptPayload, remote: RemotePrompt): boolean {
   return (
+    !remote.isDeleted &&
     sent.title === remote.title &&
     sent.content === remote.content &&
-    (sent.description ?? null) === (remote.description ?? null)
+    (sent.description ?? null) === (remote.description ?? null) &&
+    (sent.categoryId?.toLowerCase() ?? null) === (remote.categoryId?.toLowerCase() ?? null)
   )
 }
 
@@ -3632,18 +3843,16 @@ async function markApplied(
   newVersion: number | null,
 ): Promise<void> {
   await db.withTransactionAsync(async () => {
-    await completeRow(db, seq)
-    if (newVersion === null) return
+    if (newVersion === null) {
+      await completeRow(db, seq) // e.g. delete of a prompt the server never had (spec §0 C21)
+      return
+    }
+    // completeRow also rebases edits queued while this row was in flight (Task 13).
+    await completeRow(db, seq, newVersion)
     await db.runAsync(
       'UPDATE prompts SET version = ?, synced_at = ?, has_conflict = 0 WHERE id = ?',
       newVersion,
       Date.now(),
-      promptId,
-    )
-    // Edits queued while this row was in flight were based on the old version.
-    await db.runAsync(
-      'UPDATE sync_outbox SET base_version = ? WHERE prompt_id = ? AND in_flight = 0',
-      newVersion,
       promptId,
     )
   })
@@ -3676,27 +3885,28 @@ async function recordConflict(
   })
 }
 
-export async function pushSpace(spaceId: string, batchSize = 50): Promise<PushOutcome> {
+export async function pushSpace(
+  spaceId: string,
+  options: { batchSize?: number; skipSeqs?: Set<number> } = {},
+): Promise<PushOutcome> {
+  const batchSize = options.batchSize ?? 50
+  const skipSeqs = options.skipSeqs ?? new Set<number>()
+  const outcome: PushOutcome = { applied: 0, conflicts: 0, rejected: 0, remaining: false }
   const db = await getDb()
-  const rows = await claimBatch(db, spaceId, batchSize)
-  if (rows.length === 0) return { applied: 0, conflicts: 0, remaining: false }
+  const rows = await claimBatch(db, spaceId, batchSize, [...skipSeqs])
+  if (rows.length === 0) return outcome
 
   const entries: PushEntry[] = []
-  const sent = new Map<string, { seq: number; payload: PromptPayload | null }>()
-  let deferredForNextRound = false
+  const sent = new Map<string, { seq: number; operation: OutboxOperation; payload: PromptPayload | null }>()
 
   for (const row of rows) {
+    // claimBatch filters on prompts.has_conflict, which a locally deleted prompt no longer has.
     const blocked = await db.getFirstAsync<{ conflict_id: string }>(
       'SELECT conflict_id FROM sync_conflicts WHERE prompt_id = ?',
       row.prompt_id,
     )
     if (blocked) {
       await unclaim(db, row.seq) // waits for the user to resolve (Task 18)
-      continue
-    }
-    if (sent.has(row.prompt_id)) {
-      await unclaim(db, row.seq) // one entry per prompt per request; rebased after this one applies
-      deferredForNextRound = true
       continue
     }
     let payload: PromptPayload | null = null
@@ -3709,26 +3919,19 @@ export async function pushSpace(spaceId: string, batchSize = 50): Promise<PushOu
         await completeRow(db, row.seq) // deleted locally meanwhile; its delete row follows
         continue
       }
-      payload = await buildPayload(spaceId, prompt)
+      payload = await buildPayload(spaceId, prompt, row.operation)
     }
-    entries.push({
-      promptId: row.prompt_id,
-      operation: row.operation,
-      baseVersion: row.base_version,
-      payload,
-    })
-    sent.set(row.prompt_id, { seq: row.seq, payload })
+    entries.push({ promptId: row.prompt_id, operation: row.operation, baseVersion: row.base_version, payload })
+    sent.set(row.prompt_id.toLowerCase(), { seq: row.seq, operation: row.operation, payload })
   }
 
-  if (entries.length === 0) {
-    return { applied: 0, conflicts: 0, remaining: deferredForNextRound }
-  }
+  if (entries.length === 0) return outcome
 
-  let results: PushResult[]
+  let response: PushBatchResponse
   try {
-    results = await apiClient.post<PushResult[]>(
+    response = await apiClient.post<PushBatchResponse>(
       '/sync/push',
-      { spaceUuid: spaceId, deviceId: await getDeviceId(), entities: entries },
+      { spaceUuid: spaceId, entities: entries },
       { auth: true },
     )
   } catch (error) {
@@ -3740,38 +3943,62 @@ export async function pushSpace(spaceId: string, batchSize = 50): Promise<PushOu
     throw error
   }
 
-  let applied = 0
-  let conflicts = 0
   const answered = new Set<string>()
+  let followUp = false
 
-  for (const result of results) {
-    const entry = sent.get(result.promptId)
+  // HTTP 200 / success:true even when entries failed — read every result (spec §0 C1).
+  for (const result of response.results) {
+    const key = result.promptId.toLowerCase()
+    const entry = sent.get(key)
     if (!entry) continue
-    answered.add(result.promptId)
+    answered.add(key)
 
     if (result.status === 'applied') {
       await markApplied(db, result.promptId, entry.seq, result.newVersion ?? null)
-      applied += 1
+      outcome.applied += 1
+      if (await hasPending(db, result.promptId)) followUp = true // a rebased edit is now claimable
+      continue
+    }
+
+    if (result.status === 'rejected') {
+      outcome.rejected += 1
+      if (result.error?.startsWith(PERMISSION_REJECTED_PREFIX)) {
+        // Not this user's prompt to change (spec §0 C18). Drop the edit; the snapshot pulled
+        // right after this push restores the server copy.
+        await db.withTransactionAsync(async () => {
+          await completeRow(db, entry.seq)
+          await forceSnapshot(db, spaceId)
+        })
+      } else {
+        await releaseRows(db, [entry.seq], `rejected: ${result.error ?? ''}`)
+        skipSeqs.add(entry.seq)
+      }
+      continue
+    }
+
+    if (result.status !== 'conflict' || !result.conflictId || !result.remote) {
+      await releaseRows(db, [entry.seq], `unexpected_result: ${result.status}`)
+      skipSeqs.add(entry.seq)
       continue
     }
 
     const remote = result.remote
-    if (!result.conflictId || !remote) {
-      await releaseRows(db, [entry.seq], 'conflict_without_details')
-      continue
-    }
-
-    // Lost-response retry of our own write: the server already holds exactly this content
-    // (spec §11.2, gap G10). Identical content, so no data is chosen over other data.
-    if (entry.payload && sameContent(entry.payload, remote)) {
+    // Both sides already agree — our delete vs a remote delete, or identical content (e.g.
+    // the same edit made on two devices). keep_remote writes nothing server-side and is
+    // allowed for every member, so nothing is chosen over anything (no LWW).
+    const identical =
+      entry.operation === 'delete'
+        ? remote.isDeleted
+        : entry.payload !== null && sameContent(entry.payload, remote)
+    if (identical) {
       try {
-        await apiClient.post(
+        const resolved = await apiClient.post<ResolveResponse>(
           `/sync/conflicts/${result.conflictId}/resolve`,
           { resolution: 'keep_remote' },
           { auth: true },
         )
-        await markApplied(db, result.promptId, entry.seq, remote.version)
-        applied += 1
+        await markApplied(db, result.promptId, entry.seq, resolved.newVersion)
+        outcome.applied += 1
         continue
       } catch {
         // Could not auto-resolve — show it to the user like any other conflict.
@@ -3779,37 +4006,51 @@ export async function pushSpace(spaceId: string, batchSize = 50): Promise<PushOu
     }
 
     await recordConflict(db, spaceId, entry.seq, result.promptId, result.conflictId, entry.payload, remote)
-    conflicts += 1
+    outcome.conflicts += 1
   }
 
-  const unanswered = [...sent.entries()].filter(([id]) => !answered.has(id)).map(([, s]) => s.seq)
-  if (unanswered.length > 0) await releaseRows(db, unanswered, 'no_result')
+  const unanswered = [...sent.entries()].filter(([key]) => !answered.has(key)).map(([, s]) => s.seq)
+  if (unanswered.length > 0) {
+    await releaseRows(db, unanswered, 'no_result')
+    for (const seq of unanswered) skipSeqs.add(seq)
+  }
 
-  return { applied, conflicts, remaining: rows.length === batchSize || deferredForNextRound }
+  outcome.remaining = rows.length === batchSize || followUp
+  return outcome
 }
 ```
 
-- [ ] **Step 4: Run tests and type-check** — `npx jest src/lib/syncPush.test.ts && npx tsc --noEmit` → PASS.
+- [ ] **Step 5: Run tests and type-check** — `npx jest src/lib/syncPush.test.ts src/lib/outbox.test.ts && npx tsc --noEmit` → PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit** (`detect_changes()` first)
 
 ```bash
-git add src/lib/syncPush.ts src/lib/syncPush.test.ts
-git commit -m "feat(sync): push outbox to /sync/push with conflict capture"
+git add src/lib/syncPush.ts src/lib/syncPush.test.ts src/lib/outbox.ts src/lib/outbox.test.ts
+git commit -m "feat(sync): push outbox to /sync/push with batch results, rejections and conflict capture"
 ```
 
 ---
 
-### Task 15: Pull — `GET /sync/pull` with snapshot fallback
+### Task 15: Pull — `GET /sync/pull` (incremental + inline snapshot)
 
-**Depends on:** `2026-09-25-promptvault-sync-engine.md` Task 3; snapshot fallback uses `GET /prompts` and `GET /prompts/{id}` from the space-and-prompt-domain plan Task 6.
+**Depends on:** `2026-09-25-promptvault-sync-engine.md` Task 3 — merged on the backend; `GET /prompts/categories` (space-and-prompt-domain plan, gap G5) — merged. Task 14 (`forceSnapshot` uses the same `sync_state` row).
+
+**Contract (verified 2026-09-26 — spec §0 C8–C14, C22, C24; `AioKin/Models/ViewModel/Vault/SyncPullResponse.cs`, `AioKin/Services/Vault/SyncService.cs:94-421`):**
+- `GET /sync/pull?spaceUuid=&since=` → envelope `data = { isSnapshot, snapshotJson, changes, resumeCursor }`.
+- `since = 0` **always** yields a snapshot; with `since > 0` a snapshot also comes back when retention was exceeded or > 500 rows are pending.
+- `snapshotJson` is a JSON **string** with **PascalCase** keys: `{ SpaceUuid, GeneratedAt, Prompts: [{ PromptId, Title, Content, Description, CategoryId, Version, Tags, Variables }] }`; deleted prompts are not in it.
+- `changes[] = { syncLogId, entityType: 'prompt', entityId, operation: 'insert'|'update'|'delete', version, tagsVariablesOnly, prompt: { title, content, description, categoryId, isDeleted, tags, variables } | null }` (camelCase; `prompt` is null only for `'delete'`). A push delete arrives as `operation: 'update'` + `prompt.isDeleted: true`.
+- `tagsVariablesOnly` rows keep the prompt's current version (no bump) — ignore them; gate content with `version >=`.
+- Own (user, device) writes are filtered out server-side; rows younger than ~10 s are held back until a later pull.
+- `GET /prompts/categories?spaceUuid=` → envelope `data = [{ id, name }]`.
+- Errors: `403 Forbidden` (not a member), `503 SyncUnavailable`.
 
 **Files:**
 - Create: `src/lib/syncPull.ts`, `src/lib/syncPull.test.ts`
 
 **Interfaces:**
 - Consumes: `hasPending` (Task 13); `categoryNameFor` (Task 10); `apiClient`.
-- Produces: `getCursor(spaceId: string): Promise<number>`; `pullSpace(spaceId: string): Promise<{ applied: number; snapshot: boolean }>`.
+- Produces: `getCursor(spaceId: string): Promise<number>`; `parseSnapshot(json: string): SnapshotPrompt[]`; `pullSpace(spaceId: string): Promise<{ applied: number; snapshot: boolean }>`.
 
 - [ ] **Step 1: Write the failing tests** — `src/lib/syncPull.test.ts`:
 
@@ -3831,151 +4072,232 @@ import { getCursor, pullSpace } from './syncPull'
 const SPACE = 'aaaaaaaa-0000-4000-8000-000000000001'
 const get = apiClient.get as jest.Mock
 
-// sync.fn_prompts_write_log stores to_jsonb(vault.prompts row) — snake_case columns.
-function change(syncLogId: number, id: string, row: Record<string, unknown>, operation = 'update') {
+// AioKin SyncChangeItem / SyncPromptChangePayload (camelCase, typed — no raw row JSON).
+function change(
+  syncLogId: number,
+  id: string,
+  version: number,
+  prompt: Record<string, unknown> | null,
+  extra: Record<string, unknown> = {},
+) {
   return {
     syncLogId,
     entityType: 'prompt',
     entityId: id,
-    operation,
-    version: row.version,
-    payloadJson: JSON.stringify({
-      prompt_id: id,
-      space_id: 'internal-space-id',
-      description: null,
-      is_deleted: false,
-      has_conflict: false,
-      updated_date: '2026-09-25T10:00:00+00:00',
-      ...row,
-    }),
+    operation: 'update',
+    version,
+    tagsVariablesOnly: false,
+    prompt:
+      prompt === null
+        ? null
+        : { description: null, categoryId: null, isDeleted: false, tags: [], variables: [], ...prompt },
+    ...extra,
   }
+}
+
+function incremental(resumeCursor: number, changes: unknown[]) {
+  return { isSnapshot: false, snapshotJson: null, resumeCursor, changes }
+}
+
+// Seeded rows are favourites with copy_count 9, to prove pull never touches them.
+async function seed(id: string, title: string, version: number, category: string | null = null) {
+  const db = await getDb()
+  await db.runAsync(
+    `INSERT INTO prompts (id, space_id, title, content, category, is_favorite, copy_count, created_at, updated_at, version)
+     VALUES (?, ?, ?, ?, ?, 1, 9, 1, 1, ?)`,
+    id,
+    SPACE,
+    title,
+    title,
+    category,
+    version,
+  )
 }
 
 beforeEach(async () => {
   get.mockReset()
   const db = await getDb()
-  await db.execAsync('DELETE FROM prompts; DELETE FROM sync_outbox; DELETE FROM sync_state;')
+  await db.execAsync(
+    'DELETE FROM prompts; DELETE FROM sync_outbox; DELETE FROM sync_state; DELETE FROM sync_conflicts;',
+  )
   await db.runAsync(
     "INSERT OR IGNORE INTO spaces (id, kind, name, can_manage, created_at) VALUES (?, 'personal', 'P', 1, 1)",
     SPACE,
   )
 })
 
-describe('pullSpace (incremental)', () => {
-  it('inserts new prompts, maps the category and stores the cursor', async () => {
+describe('pullSpace (snapshot — since = 0 always returns one)', () => {
+  it('parses the PascalCase snapshotJson, replaces the space and keeps device-local fields', async () => {
+    await seed('keep', 'Old', 1)
+    await seed('stale', 'x', 1)
     const categoryId = await categoryIdFor(SPACE, 'Marketing')
     get.mockResolvedValue({
-      isSnapshot: false,
-      snapshotUrl: null,
-      resumeCursor: 42,
-      changes: [change(42, 'p1', { title: 'T', content: 'C', category_id: categoryId, version: 3 }, 'insert')],
+      isSnapshot: true,
+      changes: [],
+      resumeCursor: 900,
+      snapshotJson: JSON.stringify({
+        SpaceUuid: SPACE,
+        GeneratedAt: '2026-09-26T00:00:00Z',
+        Prompts: [
+          { PromptId: 'keep', Title: 'T-keep', Content: 'C', Description: null, CategoryId: categoryId, Version: 7, Tags: [], Variables: [] },
+          { PromptId: 'new', Title: 'T-new', Content: 'C', Description: null, CategoryId: null, Version: 2, Tags: [], Variables: [] },
+        ],
+      }),
     })
 
     const result = await pullSpace(SPACE)
 
     expect(get).toHaveBeenCalledWith(`/sync/pull?spaceUuid=${SPACE}&since=0`, { auth: true })
-    expect(result).toEqual({ applied: 1, snapshot: false })
+    expect(result).toEqual({ applied: 2, snapshot: true })
     const db = await getDb()
-    expect(
-      await db.getFirstAsync('SELECT title, category, version FROM prompts WHERE id = ?', 'p1'),
-    ).toEqual({ title: 'T', category: 'Marketing', version: 3 })
-    expect(await getCursor(SPACE)).toBe(42)
+    expect(await db.getAllAsync('SELECT id, title, category, is_favorite, version FROM prompts ORDER BY id')).toEqual([
+      { id: 'keep', title: 'T-keep', category: 'Marketing', is_favorite: 1, version: 7 },
+      { id: 'new', title: 'T-new', category: null, is_favorite: 0, version: 2 },
+    ])
+    expect(await getCursor(SPACE)).toBe(900)
   })
 
-  it('updates content but keeps device-local favourite and copy count', async () => {
+  it('never touches prompts with pending changes or an open conflict', async () => {
+    await seed('pending', 'Mine', 1)
+    await seed('conflicted', 'Mine too', 1)
     const db = await getDb()
+    await enqueue(db, SPACE, 'pending', 'update', 1)
     await db.runAsync(
-      `INSERT INTO prompts (id, space_id, title, content, is_favorite, copy_count, created_at, updated_at, version)
-       VALUES ('p1', ?, 'Old', 'Old', 1, 9, 1, 1, 1)`,
+      "INSERT INTO sync_conflicts (conflict_id, space_id, prompt_id, local_payload, remote_payload, remote_version, created_at) VALUES ('c', ?, 'conflicted', NULL, '{}', 2, 1)",
       SPACE,
     )
-    get.mockResolvedValue({
-      isSnapshot: false,
-      snapshotUrl: null,
-      resumeCursor: 5,
-      changes: [change(5, 'p1', { title: 'New', content: 'New', category_id: null, version: 2, is_favorite: false })],
-    })
+    get.mockResolvedValue({ isSnapshot: true, changes: [], resumeCursor: 5, snapshotJson: JSON.stringify({ Prompts: [] }) })
 
     await pullSpace(SPACE)
 
+    expect(await db.getAllAsync('SELECT id, title FROM prompts ORDER BY id')).toEqual([
+      { id: 'conflicted', title: 'Mine too' },
+      { id: 'pending', title: 'Mine' },
+    ])
+  })
+})
+
+describe('pullSpace (incremental)', () => {
+  beforeEach(async () => {
+    const db = await getDb()
+    await db.runAsync('INSERT INTO sync_state (space_id, cursor) VALUES (?, 10)', SPACE)
+  })
+
+  it('inserts new prompts, maps a derived category id and stores the cursor', async () => {
+    const categoryId = await categoryIdFor(SPACE, 'Marketing')
+    get.mockResolvedValue(
+      incremental(42, [change(42, 'p1', 3, { title: 'T', content: 'C', categoryId }, { operation: 'insert' })]),
+    )
+
+    const result = await pullSpace(SPACE)
+
+    expect(get).toHaveBeenCalledWith(`/sync/pull?spaceUuid=${SPACE}&since=10`, { auth: true })
+    expect(result).toEqual({ applied: 1, snapshot: false })
+    const db = await getDb()
+    expect(await db.getFirstAsync('SELECT title, category, version FROM prompts WHERE id = ?', 'p1')).toEqual({
+      title: 'T',
+      category: 'Marketing',
+      version: 3,
+    })
+    expect(await getCursor(SPACE)).toBe(42)
+  })
+
+  it('names categories created by other clients via /prompts/categories, fetched once', async () => {
+    const foreign = '11111111-1111-4111-8111-111111111111'
+    get.mockImplementation(async (path: string) =>
+      path.startsWith('/prompts/categories')
+        ? [{ id: foreign.toUpperCase(), name: 'Du lịch' }]
+        : incremental(3, [
+            change(2, 'a', 1, { title: 'A', content: 'A', categoryId: foreign }),
+            change(3, 'b', 1, { title: 'B', content: 'B', categoryId: foreign }),
+          ]),
+    )
+
+    await pullSpace(SPACE)
+
+    expect(get).toHaveBeenCalledWith(`/prompts/categories?spaceUuid=${SPACE}`, { auth: true })
+    expect(get.mock.calls.filter(([p]) => String(p).startsWith('/prompts/categories'))).toHaveLength(1)
+    const db = await getDb()
+    expect(await db.getAllAsync('SELECT id, category FROM prompts ORDER BY id')).toEqual([
+      { id: 'a', category: 'Du lịch' },
+      { id: 'b', category: 'Du lịch' },
+    ])
+  })
+
+  it('keeps the local category when an id cannot be named', async () => {
+    await seed('p1', 'Old', 1, 'Marketing')
+    get.mockImplementation(async (path: string) =>
+      path.startsWith('/prompts/categories')
+        ? []
+        : incremental(3, [change(3, 'p1', 2, { title: 'New', content: 'New', categoryId: '22222222-2222-4222-8222-222222222222' })]),
+    )
+
+    await pullSpace(SPACE)
+
+    const db = await getDb()
+    expect(await db.getFirstAsync("SELECT title, category FROM prompts WHERE id = 'p1'")).toEqual({
+      title: 'New',
+      category: 'Marketing',
+    })
+  })
+
+  it('updates content but keeps device-local favourite and copy count', async () => {
+    await seed('p1', 'Old', 1)
+    get.mockResolvedValue(incremental(5, [change(5, 'p1', 2, { title: 'New', content: 'New' })]))
+
+    await pullSpace(SPACE)
+
+    const db = await getDb()
     expect(
       await db.getFirstAsync('SELECT title, is_favorite, copy_count, version FROM prompts WHERE id = ?', 'p1'),
     ).toEqual({ title: 'New', is_favorite: 1, copy_count: 9, version: 2 })
   })
 
-  it('applies soft deletes and never downgrades a version', async () => {
-    const db = await getDb()
-    await db.runAsync(
-      `INSERT INTO prompts (id, space_id, title, content, created_at, updated_at, version)
-       VALUES ('gone', ?, 'x', 'x', 1, 1, 1), ('newer', ?, 'Mine', 'Mine', 1, 1, 5)`,
-      SPACE,
-      SPACE,
+  it('applies soft deletes (update + isDeleted) and hard deletes (prompt null), never downgrades', async () => {
+    await seed('soft', 'x', 1)
+    await seed('hard', 'x', 1)
+    await seed('newer', 'Mine', 5)
+    get.mockResolvedValue(
+      incremental(9, [
+        change(7, 'soft', 2, { title: 'x', content: 'x', isDeleted: true }),
+        change(8, 'hard', 2, null, { operation: 'delete' }),
+        change(9, 'newer', 4, { title: 'Stale', content: 'Stale' }),
+      ]),
     )
-    get.mockResolvedValue({
-      isSnapshot: false,
-      snapshotUrl: null,
-      resumeCursor: 9,
-      changes: [
-        change(8, 'gone', { title: 'x', content: 'x', category_id: null, version: 1, is_deleted: true }),
-        change(9, 'newer', { title: 'Stale', content: 'Stale', category_id: null, version: 4 }),
-      ],
-    })
 
     await pullSpace(SPACE)
 
-    expect(await db.getFirstAsync("SELECT id FROM prompts WHERE id = 'gone'")).toBeNull()
-    expect(await db.getFirstAsync("SELECT title FROM prompts WHERE id = 'newer'")).toEqual({ title: 'Mine' })
+    const db = await getDb()
+    expect(await db.getAllAsync('SELECT id, title FROM prompts ORDER BY id')).toEqual([{ id: 'newer', title: 'Mine' }])
   })
 
-  it('skips prompts with pending local changes', async () => {
-    const db = await getDb()
-    await db.runAsync(
-      "INSERT INTO prompts (id, space_id, title, content, created_at, updated_at, version) VALUES ('p1', ?, 'Mine', 'Mine', 1, 1, 1)",
-      SPACE,
+  it('ignores tag/variable-only rows and applies a content row with an equal version (>=)', async () => {
+    await seed('p1', 'Old', 3)
+    get.mockResolvedValue(
+      incremental(12, [
+        change(11, 'p1', 3, { title: 'LIVE ROW — must not be applied', content: 'x' }, { tagsVariablesOnly: true }),
+        change(12, 'p1', 3, { title: 'Same version', content: 'y' }),
+      ]),
     )
+
+    const result = await pullSpace(SPACE)
+
+    expect(result.applied).toBe(1)
+    const db = await getDb()
+    expect(await db.getFirstAsync("SELECT title FROM prompts WHERE id = 'p1'")).toEqual({ title: 'Same version' })
+    expect(await getCursor(SPACE)).toBe(12)
+  })
+
+  it('skips prompts with pending local changes but still advances the cursor', async () => {
+    await seed('p1', 'Mine', 1)
+    const db = await getDb()
     await enqueue(db, SPACE, 'p1', 'update', 1)
-    get.mockResolvedValue({
-      isSnapshot: false,
-      snapshotUrl: null,
-      resumeCursor: 3,
-      changes: [change(3, 'p1', { title: 'Theirs', content: 'Theirs', category_id: null, version: 2 })],
-    })
+    get.mockResolvedValue(incremental(13, [change(13, 'p1', 2, { title: 'Theirs', content: 'Theirs' })]))
 
     await pullSpace(SPACE)
 
     expect(await db.getFirstAsync("SELECT title FROM prompts WHERE id = 'p1'")).toEqual({ title: 'Mine' })
-    expect(await getCursor(SPACE)).toBe(3)
-  })
-})
-
-describe('pullSpace (snapshot fallback — spec gap G4)', () => {
-  it('rebuilds the space from /prompts and removes rows the server no longer has', async () => {
-    const db = await getDb()
-    await db.runAsync(
-      `INSERT INTO prompts (id, space_id, title, content, is_favorite, created_at, updated_at, version)
-       VALUES ('keep', ?, 'Old', 'Old', 1, 1, 1, 1), ('stale', ?, 'x', 'x', 0, 1, 1, 1)`,
-      SPACE,
-      SPACE,
-    )
-    get.mockImplementation(async (path: string) => {
-      if (path.startsWith('/sync/pull')) {
-        return { isSnapshot: true, snapshotUrl: 'snapshots/x.json.gz', changes: [], resumeCursor: 900 }
-      }
-      if (path.startsWith('/prompts?')) return [{ promptId: 'keep' }, { promptId: 'new' }]
-      const id = path.split('/')[2]!.split('?')[0]
-      return { promptId: id, title: `T-${id}`, content: 'C', description: null, version: 7 }
-    })
-
-    const result = await pullSpace(SPACE)
-
-    expect(result).toEqual({ applied: 2, snapshot: true })
-    expect(get).toHaveBeenCalledWith(`/prompts/keep?spaceUuid=${SPACE}`, { auth: true })
-    const rows = await db.getAllAsync('SELECT id, title, is_favorite, version FROM prompts ORDER BY id')
-    expect(rows).toEqual([
-      { id: 'keep', title: 'T-keep', is_favorite: 1, version: 7 },
-      { id: 'new', title: 'T-new', is_favorite: 0, version: 7 },
-    ])
-    expect(await getCursor(SPACE)).toBe(900)
+    expect(await getCursor(SPACE)).toBe(13)
   })
 })
 ```
@@ -3993,45 +4315,87 @@ import { categoryNameFor } from './categoryId'
 import { getDb } from './db'
 import { hasPending } from './outbox'
 
-// sync-engine plan Task 3 Step 3: SyncPullResponse / SyncChangeItem.
+// AioKin SyncPullResponse (Models/ViewModel/Vault/SyncPullResponse.cs), camelCase.
+type ChangePrompt = {
+  title: string
+  content: string
+  description: string | null
+  categoryId: string | null
+  isDeleted: boolean
+}
+
 type ChangeItem = {
   syncLogId: number
   entityType: string
   entityId: string
-  operation: string
-  payloadJson: string | null
+  operation: string // 'insert' | 'update' | 'delete'
   version: number
+  tagsVariablesOnly: boolean
+  prompt: ChangePrompt | null // null only for a hard 'delete'
 }
 
 type PullResponse = {
   isSnapshot: boolean
-  snapshotUrl: string | null
+  snapshotJson: string | null
   changes: ChangeItem[]
   resumeCursor: number
 }
 
-// to_jsonb(vault.prompts) row written by sync.fn_prompts_write_log. space_id in it is the
-// backend's internal id — never used here.
-type PromptRowPayload = {
+export type SnapshotPrompt = {
+  promptId: string
   title: string
   content: string
-  category_id: string | null
+  categoryId: string | null
   version: number
-  is_deleted: boolean
-  created_date?: string
-  updated_date?: string
 }
 
-type PromptSummary = { promptId: string }
-type PromptDetail = { promptId: string; title: string; content: string; description: string | null; version: number }
+// undefined = "could not name this id" → keep the local category (spec §9).
+type ResolvedCategory = string | null | undefined
 
 type Prepared =
   | { id: string; deleted: true }
-  | { id: string; deleted: false; row: PromptRowPayload; category: string | null }
+  | { id: string; deleted: false; title: string; content: string; category: ResolvedCategory; version: number }
 
-function parseTime(value: string | undefined): number {
-  const parsed = value ? Date.parse(value) : NaN
-  return Number.isNaN(parsed) ? Date.now() : parsed
+// snapshotJson is written with default System.Text.Json options, i.e. PascalCase keys
+// (SyncService.BuildSnapshotFallbackAsync) — read either casing.
+function field(source: Record<string, unknown>, camel: string): unknown {
+  if (camel in source) return source[camel]
+  return source[camel.charAt(0).toUpperCase() + camel.slice(1)]
+}
+
+export function parseSnapshot(json: string): SnapshotPrompt[] {
+  const root = JSON.parse(json) as Record<string, unknown>
+  const prompts = (field(root, 'prompts') ?? []) as Record<string, unknown>[]
+  return prompts.map((p) => ({
+    promptId: String(field(p, 'promptId')),
+    title: String(field(p, 'title') ?? ''),
+    content: String(field(p, 'content') ?? ''),
+    categoryId: (field(p, 'categoryId') as string | null | undefined) ?? null,
+    version: Number(field(p, 'version') ?? 0),
+  }))
+}
+
+// Derived ids of PROMPT_CATEGORIES first (no network), then the space's categories list,
+// fetched at most once per pull (GET /prompts/categories, spec §0 C24).
+function categoryResolver(spaceId: string): (categoryId: string | null) => Promise<ResolvedCategory> {
+  let remote: Map<string, string> | null = null
+  return async (categoryId) => {
+    if (!categoryId) return null
+    const derived = await categoryNameFor(spaceId, categoryId)
+    if (derived) return derived
+    if (!remote) {
+      try {
+        const list = await apiClient.get<{ id: string; name: string }[]>(
+          `/prompts/categories?spaceUuid=${encodeURIComponent(spaceId)}`,
+          { auth: true },
+        )
+        remote = new Map(list.map((c) => [c.id.toLowerCase(), c.name]))
+      } catch {
+        remote = new Map()
+      }
+    }
+    return remote.get(categoryId.toLowerCase())
+  }
 }
 
 export async function getCursor(spaceId: string): Promise<number> {
@@ -4053,14 +4417,27 @@ async function setCursor(db: SQLiteDatabase, spaceId: string, cursor: number): P
   )
 }
 
-// Keeps is_favorite, copy_count and has_conflict — device-local (spec §9).
+// Pending outbox rows win locally (the push surfaces any divergence); an open conflict's
+// local row is "your version" on the conflict screen and must not be overwritten.
+async function isLocked(db: SQLiteDatabase, promptId: string): Promise<boolean> {
+  if (await hasPending(db, promptId)) return true
+  const conflict = await db.getFirstAsync<{ conflict_id: string }>(
+    'SELECT conflict_id FROM sync_conflicts WHERE prompt_id = ? LIMIT 1',
+    promptId,
+  )
+  return conflict !== null
+}
+
+// Keeps is_favorite and copy_count — device-local (spec §9). `>=`, not `>`: two change rows
+// of one prompt can share a version (spec §0 C13).
 async function upsertRemote(
   db: SQLiteDatabase,
   spaceId: string,
   id: string,
-  fields: { title: string; content: string; category: string | null; version: number; createdAt: number; updatedAt: number },
-  keepLocalCategory: boolean,
+  fields: { title: string; content: string; category: ResolvedCategory; version: number },
 ): Promise<void> {
+  const now = Date.now()
+  const keepLocalCategory = fields.category === undefined
   await db.runAsync(
     `INSERT INTO prompts (id, space_id, title, content, category, is_favorite, copy_count,
                           created_at, updated_at, synced_at, version, has_conflict)
@@ -4077,47 +4454,40 @@ async function upsertRemote(
     spaceId,
     fields.title,
     fields.content,
-    fields.category,
-    fields.createdAt,
-    fields.updatedAt,
-    Date.now(),
+    fields.category ?? null,
+    now,
+    now,
+    now,
     fields.version,
   )
 }
 
-async function applySnapshot(db: SQLiteDatabase, spaceId: string, resumeCursor: number): Promise<number> {
-  // snapshotUrl is a storage path that needs the service key (spec gap G4), so rebuild the
-  // space from the read-only browse endpoints instead.
-  const query = `spaceUuid=${encodeURIComponent(spaceId)}`
-  const summaries = await apiClient.get<PromptSummary[]>(`/prompts?${query}`, { auth: true })
-  const details: PromptDetail[] = []
-  for (const summary of summaries) {
-    details.push(await apiClient.get<PromptDetail>(`/prompts/${summary.promptId}?${query}`, { auth: true }))
-  }
+async function applySnapshot(db: SQLiteDatabase, spaceId: string, response: PullResponse): Promise<number> {
+  const prompts = parseSnapshot(response.snapshotJson ?? '{}')
+  const resolveCategory = categoryResolver(spaceId)
+  const categories = new Map<string, ResolvedCategory>()
+  for (const p of prompts) categories.set(p.promptId, await resolveCategory(p.categoryId))
 
   let applied = 0
   await db.withTransactionAsync(async () => {
-    const keep = new Set(details.map((d) => d.promptId))
+    const keep = new Set(prompts.map((p) => p.promptId.toLowerCase()))
     const local = await db.getAllAsync<{ id: string }>('SELECT id FROM prompts WHERE space_id = ?', spaceId)
     for (const { id } of local) {
-      if (!keep.has(id) && !(await hasPending(db, id))) {
+      if (!keep.has(id.toLowerCase()) && !(await isLocked(db, id))) {
         await db.runAsync('DELETE FROM prompts WHERE id = ?', id)
       }
     }
-    for (const detail of details) {
-      if (await hasPending(db, detail.promptId)) continue
-      const now = Date.now()
-      // PromptDetailResponse has no category (spec gap G5) — keep whatever we have locally.
-      await upsertRemote(
-        db,
-        spaceId,
-        detail.promptId,
-        { title: detail.title, content: detail.content, category: null, version: detail.version, createdAt: now, updatedAt: now },
-        true,
-      )
+    for (const p of prompts) {
+      if (await isLocked(db, p.promptId)) continue
+      await upsertRemote(db, spaceId, p.promptId, {
+        title: p.title,
+        content: p.content,
+        category: categories.get(p.promptId),
+        version: p.version,
+      })
       applied += 1
     }
-    await setCursor(db, spaceId, resumeCursor)
+    await setCursor(db, spaceId, response.resumeCursor)
   })
   return applied
 }
@@ -4131,50 +4501,39 @@ export async function pullSpace(spaceId: string): Promise<{ applied: number; sna
   )
 
   if (response.isSnapshot) {
-    return { applied: await applySnapshot(db, spaceId, response.resumeCursor), snapshot: true }
+    return { applied: await applySnapshot(db, spaceId, response), snapshot: true }
   }
 
-  // Category names need async hashing — resolve them before opening the transaction.
+  // Category names may need network/hashing — resolve before opening the transaction.
+  const resolveCategory = categoryResolver(spaceId)
   const prepared: Prepared[] = []
   for (const item of response.changes) {
-    if (item.entityType !== 'prompt' || !item.payloadJson) continue
-    const row = (
-      typeof item.payloadJson === 'string' ? JSON.parse(item.payloadJson) : item.payloadJson
-    ) as PromptRowPayload
-    if (item.operation === 'delete' || row.is_deleted) {
+    if (item.entityType !== 'prompt') continue
+    // Tag/variable-only delta: the app stores no tags, and its title/content are the live
+    // row, not history (spec §0 C13).
+    if (item.tagsVariablesOnly) continue
+    if (item.operation === 'delete' || !item.prompt || item.prompt.isDeleted) {
       prepared.push({ id: item.entityId, deleted: true })
-    } else {
-      prepared.push({
-        id: item.entityId,
-        deleted: false,
-        row,
-        category: await categoryNameFor(spaceId, row.category_id),
-      })
+      continue
     }
+    prepared.push({
+      id: item.entityId,
+      deleted: false,
+      title: item.prompt.title,
+      content: item.prompt.content,
+      category: await resolveCategory(item.prompt.categoryId),
+      version: item.version,
+    })
   }
 
   let applied = 0
   await db.withTransactionAsync(async () => {
     for (const change of prepared) {
-      // A pending local change wins locally; the push will surface any conflict.
-      if (await hasPending(db, change.id)) continue
+      if (await isLocked(db, change.id)) continue
       if (change.deleted) {
         await db.runAsync('DELETE FROM prompts WHERE id = ? AND space_id = ?', change.id, spaceId)
       } else {
-        await upsertRemote(
-          db,
-          spaceId,
-          change.id,
-          {
-            title: change.row.title,
-            content: change.row.content,
-            category: change.category,
-            version: change.row.version,
-            createdAt: parseTime(change.row.created_date),
-            updatedAt: parseTime(change.row.updated_date),
-          },
-          false,
-        )
+        await upsertRemote(db, spaceId, change.id, change)
       }
       applied += 1
     }
@@ -4186,11 +4545,11 @@ export async function pullSpace(spaceId: string): Promise<{ applied: number; sna
 
 - [ ] **Step 4: Run tests and type-check** — `npx jest src/lib/syncPull.test.ts && npx tsc --noEmit` → PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit** (`detect_changes()` first)
 
 ```bash
 git add src/lib/syncPull.ts src/lib/syncPull.test.ts
-git commit -m "feat(sync): pull /sync/pull changes with browse-endpoint snapshot fallback"
+git commit -m "feat(sync): pull /sync/pull changes and inline snapshots"
 ```
 
 ---
@@ -4199,13 +4558,15 @@ git commit -m "feat(sync): pull /sync/pull changes with browse-endpoint snapshot
 
 **Depends on:** Tasks 14–15.
 
+**Contract notes (2026-09-26, spec §0 C3, C22):** a push `rejected` entry is counted, not thrown; a generic rejection must not be re-sent within the same run (one `skipSeqs` set per space per run, passed to `pushSpace`), so a stuck row can't burn all push rounds or starve newer rows. A `403 Forbidden` from push or pull means the user lost access to that space → refresh `/spaces/me` once at the end of the run (Task 11 drops the space and its rows). `503 SyncUnavailable` from pull is just an error for that space this run.
+
 **Files:**
 - Create: `src/lib/syncEngine.ts`, `src/lib/syncEngine.test.ts`, `src/lib/backgroundSync.ts`
 - Modify: `src/app/_layout.tsx`, `app.json`, `package.json` (+ lockfiles)
 
 **Interfaces:**
-- Consumes: `pushSpace`, `pullSpace`, `resetInFlight`, `setPromptWriteListener`, `getTokens`.
-- Produces: `type SyncSummary = { pushed: number; conflicts: number; pulled: number; errors: number }`; `runSync(): Promise<SyncSummary>` (single-flight, no-op when signed out); `requestSync(delayMs?: number): void` (debounced, default 2000); `startSyncTriggers(): () => void`; `SYNC_TASK = 'promptvault-sync'`; `registerBackgroundSync(): Promise<void>`.
+- Consumes: `pushSpace(spaceId, { skipSeqs })`, `pullSpace`, `resetInFlight`, `setPromptWriteListener`, `getTokens`, `fetchAndStoreMySpaces` (Task 11), `ApiError`.
+- Produces: `type SyncSummary = { pushed: number; conflicts: number; rejected: number; pulled: number; errors: number }`; `runSync(): Promise<SyncSummary>` (single-flight, no-op when signed out); `requestSync(delayMs?: number): void` (debounced, default 2000); `startSyncTriggers(): () => void`; `SYNC_TASK = 'promptvault-sync'`; `registerBackgroundSync(): Promise<void>`.
 
 - [ ] **Step 1: Install the Expo modules** (read their v57 docs first):
 
@@ -4220,14 +4581,32 @@ Add `"expo-background-task"` to `app.json` → `expo.plugins`. Confirm the iOS b
 ```ts
 jest.mock('./syncPush', () => ({ pushSpace: jest.fn() }))
 jest.mock('./syncPull', () => ({ pullSpace: jest.fn() }))
+jest.mock('./spaces', () => ({ fetchAndStoreMySpaces: jest.fn(async () => []) }))
 jest.mock('./tokenStore', () => ({ getTokens: jest.fn() }))
 jest.mock('expo-network', () => ({ addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })) }))
+jest.mock('@/services/apiClient', () => {
+  class ApiError extends Error {
+    status: number
+    code: string
+    constructor(status: number, code: string, message: string) {
+      super(message)
+      this.status = status
+      this.code = code
+    }
+  }
+  return { ApiError }
+})
+
+import { ApiError } from '@/services/apiClient'
 
 import { getDb } from './db'
+import { fetchAndStoreMySpaces } from './spaces'
 import { runSync } from './syncEngine'
 import { pullSpace } from './syncPull'
 import { pushSpace } from './syncPush'
 import { getTokens } from './tokenStore'
+
+const idle = { applied: 0, conflicts: 0, rejected: 0, remaining: false }
 
 beforeEach(async () => {
   jest.clearAllMocks()
@@ -4237,7 +4616,7 @@ beforeEach(async () => {
     "INSERT INTO spaces (id, kind, name, can_manage, created_at) VALUES ('s1', 'personal', 'P', 1, 1), ('s2', 'team', 'T', 0, 2)",
   )
   ;(getTokens as jest.Mock).mockResolvedValue({ accessToken: 'a', refreshToken: 'r', expiresAt: 1 })
-  ;(pushSpace as jest.Mock).mockResolvedValue({ applied: 0, conflicts: 0, remaining: false })
+  ;(pushSpace as jest.Mock).mockResolvedValue(idle)
   ;(pullSpace as jest.Mock).mockResolvedValue({ applied: 1, snapshot: false })
 })
 
@@ -4246,16 +4625,24 @@ describe('runSync', () => {
     const summary = await runSync()
     expect((pushSpace as jest.Mock).mock.calls.map((c) => c[0])).toEqual(['s1', 's2'])
     expect((pullSpace as jest.Mock).mock.calls.map((c) => c[0])).toEqual(['s1', 's2'])
-    expect(summary).toEqual({ pushed: 0, conflicts: 0, pulled: 2, errors: 0 })
+    expect(summary).toEqual({ pushed: 0, conflicts: 0, rejected: 0, pulled: 2, errors: 0 })
   })
 
-  it('keeps pushing while the outbox has more rows', async () => {
+  it('keeps pushing while the outbox has more rows, sharing one skip set per space', async () => {
     ;(pushSpace as jest.Mock)
-      .mockResolvedValueOnce({ applied: 50, conflicts: 0, remaining: true })
-      .mockResolvedValueOnce({ applied: 3, conflicts: 1, remaining: false })
+      .mockResolvedValueOnce({ applied: 49, conflicts: 0, rejected: 1, remaining: true })
+      .mockResolvedValueOnce({ applied: 3, conflicts: 1, rejected: 0, remaining: false })
     const summary = await runSync()
-    expect(summary.pushed).toBe(53)
-    expect(summary.conflicts).toBe(1)
+    expect(summary).toMatchObject({ pushed: 52, conflicts: 1, rejected: 1 })
+    const [first, second] = (pushSpace as jest.Mock).mock.calls
+    expect(first![1].skipSeqs).toBe(second![1].skipSeqs)
+  })
+
+  it('refreshes the space list once when a space answers 403', async () => {
+    ;(pullSpace as jest.Mock).mockRejectedValueOnce(new ApiError(403, 'Forbidden', 'Ban khong thuoc space nay.'))
+    const summary = await runSync()
+    expect(summary.errors).toBe(1)
+    expect(fetchAndStoreMySpaces).toHaveBeenCalledTimes(1)
   })
 
   it('is single-flight', async () => {
@@ -4286,14 +4673,17 @@ describe('runSync', () => {
 import { AppState } from 'react-native'
 import * as Network from 'expo-network'
 
+import { ApiError } from '@/services/apiClient'
+
 import { getDb } from './db'
 import { resetInFlight } from './outbox'
 import { setPromptWriteListener } from './prompts'
+import { fetchAndStoreMySpaces } from './spaces'
 import { pullSpace } from './syncPull'
 import { pushSpace } from './syncPush'
 import { getTokens } from './tokenStore'
 
-export type SyncSummary = { pushed: number; conflicts: number; pulled: number; errors: number }
+export type SyncSummary = { pushed: number; conflicts: number; rejected: number; pulled: number; errors: number }
 
 const MAX_PUSH_ROUNDS = 10
 
@@ -4301,7 +4691,7 @@ let running: Promise<SyncSummary> | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 
 async function doSync(): Promise<SyncSummary> {
-  const summary: SyncSummary = { pushed: 0, conflicts: 0, pulled: 0, errors: 0 }
+  const summary: SyncSummary = { pushed: 0, conflicts: 0, rejected: 0, pulled: 0, errors: 0 }
   if (!(await getTokens())) return summary
 
   const db = await getDb()
@@ -4310,19 +4700,28 @@ async function doSync(): Promise<SyncSummary> {
     "SELECT id FROM spaces WHERE kind <> 'local' ORDER BY created_at",
   )
 
+  let lostAccess = false
   for (const { id } of spaces) {
+    // Rows rejected in this run are retried on the next run, never in a later round of this
+    // one (spec §11.2) — otherwise one stuck row could eat every round.
+    const skipSeqs = new Set<number>()
     try {
       for (let round = 0; round < MAX_PUSH_ROUNDS; round += 1) {
-        const outcome = await pushSpace(id)
+        const outcome = await pushSpace(id, { skipSeqs })
         summary.pushed += outcome.applied
         summary.conflicts += outcome.conflicts
+        summary.rejected += outcome.rejected
         if (!outcome.remaining) break
       }
+      // Also brings the snapshot a permission rejection asked for (Task 14 forceSnapshot).
       summary.pulled += (await pullSpace(id)).applied
-    } catch {
+    } catch (error) {
       summary.errors += 1
+      if (error instanceof ApiError && error.status === 403) lostAccess = true
     }
   }
+  // Removed from a family/team: /spaces/me no longer lists it, so its local rows are dropped.
+  if (lostAccess) await fetchAndStoreMySpaces().catch(() => undefined)
   return summary
 }
 
@@ -4423,6 +4822,8 @@ git commit -m "feat(sync): single-flight sync engine with foreground, network an
 ### Task 17: First-login adoption, account switching and sign-out wipe
 
 **Depends on:** Tasks 11–16.
+
+**Contract check (2026-09-26):** no request/response shape in this task changed. Adopted prompts are pushed as `insert` rows by Task 14 (the creator becomes the author, so later edits are never permission-rejected). A snapshot on the first pull of a fresh space (`since = 0`, spec §0 C10) is expected and harmless. `pendingChanges()` also counts rows that were `rejected` and are waiting for a later run, which is exactly what the sign-out warning should include.
 
 **Files:**
 - Create: `src/lib/accountData.ts`, `src/lib/accountData.test.ts`
@@ -4767,24 +5168,42 @@ git commit -m "feat(sync): adopt local prompts on first sign-in and wipe synced 
 
 ### Task 18: Conflict resolution library
 
-**Depends on:** `2026-09-25-promptvault-sync-engine.md` Task 4 (`POST /sync/conflicts/{id}/resolve`).
+**Depends on:** `2026-09-25-promptvault-sync-engine.md` Task 4 (`POST /sync/conflicts/{id}/resolve`) — merged on the backend. Tasks 13 (implemented), 14, 16.
+
+**Contract (verified 2026-09-26 — spec §0 C15–C18; `AioKin/Models/InputModel/Vault/ResolveConflictRequest.cs`, `AioKin/Models/ViewModel/Vault/ResolveConflictResponse.cs`, `AioKin/Services/Vault/SyncService.cs:829-1032`):**
+- Body `{ resolution: 'keep_local' | 'keep_remote' | 'merged', mergedPayload? }` (`mergedPayload` = `PromptPayload`, required for `merged`). No space/device fields — the space comes from the stored conflict, the device from the session.
+- Success → envelope `data = { promptId, newVersion, isDeleted }` — apply it directly, no follow-up pull (gap G8 closed).
+- `keep_remote` writes nothing and is allowed for any member. `keep_local` replays the stored local operation: a local **delete** soft-deletes (`isDeleted: true`, gap G9 closed), a local edit is applied and **undeletes** a remotely deleted prompt. `merged` always undeletes.
+- Errors: `403 Forbidden` for `keep_local`/`merged` by a non-author member without `canManage` (or a non-member); `409 Conflict` when the live row changed since the conflict was recorded; `404 NotFound` when the conflict is already resolved or the prompt is gone; `422 ValidationError` for a bad resolution or payload.
+
+Rules (spec §12):
+- "Your version" is the **current local row** (edits made after the conflict are included). If it is unchanged since the conflict (`updated_at <= created_at`) send `keep_local`, else `merged` with the current row (`buildPayload(…, 'update')`, so an emptied category is sent as `clearCategory: true`).
+- On success every resolution drops the prompt's outbox rows, deletes the `sync_conflicts` row, clears `has_conflict`, sets `version = newVersion`, and deletes the local row when `isDeleted` is true; then `runSync()` flushes other queued work.
+- `403` on `keep_local`/`merged` → return `'forbidden'`; nothing changes locally (the UI then offers only `keep_remote`).
+- `409`/`404` → the server-side conflict can no longer be resolved. Drop the local conflict record and re-express the user's choice as a normal outbox row based on `remote_version` (`update` with the chosen content, or `delete`); for `keep_remote` force a snapshot instead. Return `'requeued'`. The next push applies it or raises a fresh conflict against the current server state — no data is silently chosen.
 
 **Files:**
 - Create: `src/lib/conflicts.ts`, `src/lib/conflicts.test.ts`
 
 **Interfaces:**
-- Consumes: `buildPayload`, `PromptPayload`, `RemotePrompt` (Task 14); `enqueue` (Task 13); `runSync` (Task 16).
-- Produces: `type ConflictRecord = { conflictId: string; spaceId: string; promptId: string; local: PromptPayload | null; remote: RemotePrompt; remoteVersion: number; createdAt: number }`; `type LocalVersion = { title: string; content: string; category: string | null; updatedAt: number }`; `getConflictForPrompt(promptId): Promise<ConflictRecord | null>`; `getLocalVersion(promptId): Promise<LocalVersion | null>`; `resolveKeepRemote(c): Promise<void>`; `resolveKeepLocal(c): Promise<void>`; `resolveMerged(c, merged: { title: string; content: string; category: string | null }): Promise<void>`.
-
-Rules (spec §12):
-- "Your version" is the **current local row** (edits made after the conflict are included). If it is unchanged since the conflict (`updated_at <= created_at`) send `keep_local`, else `merged` with the current row.
-- Every resolution drops the prompt's pending outbox rows (they are superseded), clears `has_conflict`, sets `version = remote_version`, deletes the `sync_conflicts` row, then `runSync()` so the pull brings the server's new version (gap G8).
-- Delete-vs-edit (no local row): `keep_local` would fail server-side (gap G9), so "Vẫn xoá" = `keep_remote` + enqueue `delete` with `base_version = remote_version`.
+- Consumes: `buildPayload`, `forceSnapshot`, `PromptPayload`, `RemotePrompt`, `ResolveResponse` (Task 14); `enqueue` (Task 13); `categoryNameFor` (Task 10); `runSync` (Task 16); `ApiError`, `apiClient` (Task 1).
+- Produces: `type ConflictRecord = { conflictId: string; spaceId: string; promptId: string; local: PromptPayload | null; remote: RemotePrompt; remoteVersion: number; createdAt: number }`; `type LocalVersion = { title: string; content: string; category: string | null; updatedAt: number }`; `type ResolveOutcome = 'resolved' | 'requeued' | 'forbidden'`; `getConflictForPrompt(promptId): Promise<ConflictRecord | null>`; `getLocalVersion(promptId): Promise<LocalVersion | null>`; `resolveKeepRemote(c): Promise<ResolveOutcome>`; `resolveKeepLocal(c): Promise<ResolveOutcome>`; `resolveMerged(c, merged: { title: string; content: string; category: string | null }): Promise<ResolveOutcome>`.
 
 - [ ] **Step 1: Write the failing tests** — `src/lib/conflicts.test.ts`:
 
 ```ts
-jest.mock('@/services/apiClient', () => ({ apiClient: { post: jest.fn() } }))
+jest.mock('@/services/apiClient', () => {
+  class ApiError extends Error {
+    status: number
+    code: string
+    constructor(status: number, code: string, message: string) {
+      super(message)
+      this.status = status
+      this.code = code
+    }
+  }
+  return { ApiError, apiClient: { post: jest.fn() } }
+})
 jest.mock('./syncEngine', () => ({ runSync: jest.fn(async () => undefined) }))
 jest.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
@@ -4792,7 +5211,7 @@ jest.mock('expo-crypto', () => ({
     require('crypto').createHash('sha256').update(value).digest('hex'),
 }))
 
-import { apiClient } from '@/services/apiClient'
+import { ApiError, apiClient } from '@/services/apiClient'
 
 import {
   getConflictForPrompt,
@@ -4805,10 +5224,23 @@ import { runSync } from './syncEngine'
 
 const SPACE = 'aaaaaaaa-0000-4000-8000-000000000001'
 const post = apiClient.post as jest.Mock
-const remote = { promptId: 'p1', title: 'Máy chủ', content: 'Nội dung máy chủ', description: null, version: 4 }
 const CONFLICT_AT = 1_000
 
-async function seed({ withLocalRow = true, localUpdatedAt = 500 } = {}) {
+function remote(overrides: Record<string, unknown> = {}) {
+  return {
+    promptId: 'p1',
+    title: 'Máy chủ',
+    content: 'Nội dung máy chủ',
+    description: null,
+    categoryId: null,
+    categoryName: null,
+    version: 4,
+    isDeleted: false,
+    ...overrides,
+  }
+}
+
+async function seed({ withLocalRow = true, localUpdatedAt = 500, remoteDeleted = false } = {}) {
   const db = await getDb()
   if (withLocalRow) {
     await db.runAsync(
@@ -4822,8 +5254,8 @@ async function seed({ withLocalRow = true, localUpdatedAt = 500 } = {}) {
     `INSERT INTO sync_conflicts (conflict_id, space_id, prompt_id, local_payload, remote_payload, remote_version, created_at)
      VALUES ('c-1', ?, 'p1', ?, ?, 4, ?)`,
     SPACE,
-    withLocalRow ? JSON.stringify({ title: 'Của tôi', content: 'Nội dung của tôi' }) : null,
-    JSON.stringify(remote),
+    withLocalRow ? JSON.stringify({ title: 'Của tôi', content: 'Nội dung của tôi', description: null }) : null,
+    JSON.stringify(remote({ isDeleted: remoteDeleted })),
     CONFLICT_AT,
   )
   await db.runAsync(
@@ -4833,9 +5265,10 @@ async function seed({ withLocalRow = true, localUpdatedAt = 500 } = {}) {
 }
 
 beforeEach(async () => {
-  post.mockReset().mockResolvedValue(undefined)
+  post.mockReset()
+  ;(runSync as jest.Mock).mockClear()
   const db = await getDb()
-  await db.execAsync('DELETE FROM prompts; DELETE FROM sync_outbox; DELETE FROM sync_conflicts;')
+  await db.execAsync('DELETE FROM prompts; DELETE FROM sync_outbox; DELETE FROM sync_conflicts; DELETE FROM sync_state;')
   await db.runAsync(
     "INSERT OR IGNORE INTO spaces (id, kind, name, can_manage, created_at) VALUES (?, 'personal', 'P', 1, 1)",
     SPACE,
@@ -4852,9 +5285,11 @@ async function state() {
 }
 
 describe('conflicts', () => {
-  it('keep_remote overwrites the local row and clears the conflict', async () => {
+  it('keep_remote writes the server copy with the returned version', async () => {
     await seed()
-    await resolveKeepRemote((await getConflictForPrompt('p1'))!)
+    post.mockResolvedValue({ promptId: 'p1', newVersion: 4, isDeleted: false })
+
+    expect(await resolveKeepRemote((await getConflictForPrompt('p1'))!)).toBe('resolved')
 
     expect(post).toHaveBeenCalledWith('/sync/conflicts/c-1/resolve', { resolution: 'keep_remote' }, { auth: true })
     expect(await state()).toEqual({
@@ -4865,47 +5300,92 @@ describe('conflicts', () => {
     expect(runSync).toHaveBeenCalled()
   })
 
+  it('keep_remote on a remotely deleted prompt deletes it locally', async () => {
+    await seed({ remoteDeleted: true })
+    post.mockResolvedValue({ promptId: 'p1', newVersion: 4, isDeleted: true })
+
+    await resolveKeepRemote((await getConflictForPrompt('p1'))!)
+
+    expect((await state()).prompt).toBeNull()
+  })
+
   it('keep_local when the local row is unchanged since the conflict', async () => {
     await seed({ localUpdatedAt: 500 })
+    post.mockResolvedValue({ promptId: 'p1', newVersion: 5, isDeleted: false })
+
     await resolveKeepLocal((await getConflictForPrompt('p1'))!)
 
     expect(post).toHaveBeenCalledWith('/sync/conflicts/c-1/resolve', { resolution: 'keep_local' }, { auth: true })
-    expect((await state()).prompt).toEqual({ title: 'Của tôi', version: 4, has_conflict: 0 })
+    expect((await state()).prompt).toEqual({ title: 'Của tôi', version: 5, has_conflict: 0 })
   })
 
   it('sends the current row as merged when it was edited after the conflict', async () => {
     await seed({ localUpdatedAt: 2_000 })
+    post.mockResolvedValue({ promptId: 'p1', newVersion: 5, isDeleted: false })
+
     await resolveKeepLocal((await getConflictForPrompt('p1'))!)
 
     const body = post.mock.calls[0]![1]
     expect(body.resolution).toBe('merged')
     expect(body.mergedPayload).toMatchObject({ title: 'Của tôi', content: 'Nội dung của tôi', categoryName: 'Marketing' })
+    expect(body.mergedPayload).not.toHaveProperty('tags')
   })
 
-  it('delete-vs-edit: keep_remote then re-queue the delete on the remote version', async () => {
+  it('"Vẫn xoá": keep_local on a local delete lets the server delete it (gap G9 closed)', async () => {
     await seed({ withLocalRow: false })
+    post.mockResolvedValue({ promptId: 'p1', newVersion: 5, isDeleted: true })
+
     await resolveKeepLocal((await getConflictForPrompt('p1'))!)
 
-    expect(post).toHaveBeenCalledWith('/sync/conflicts/c-1/resolve', { resolution: 'keep_remote' }, { auth: true })
+    expect(post).toHaveBeenCalledWith('/sync/conflicts/c-1/resolve', { resolution: 'keep_local' }, { auth: true })
+    expect(await state()).toEqual({ prompt: null, outbox: [], conflict: null })
+  })
+
+  it('merged writes the chosen content locally and clears an emptied category', async () => {
+    await seed()
+    post.mockResolvedValue({ promptId: 'p1', newVersion: 5, isDeleted: false })
+
+    await resolveMerged((await getConflictForPrompt('p1'))!, { title: 'Gộp', content: 'Cả hai', category: null })
+
+    expect(post.mock.calls[0]![1]).toEqual({
+      resolution: 'merged',
+      mergedPayload: { title: 'Gộp', content: 'Cả hai', description: null, clearCategory: true },
+    })
+    expect((await state()).prompt).toEqual({ title: 'Gộp', version: 5, has_conflict: 0 })
+  })
+
+  it('403 on keep_local reports forbidden and changes nothing', async () => {
+    await seed()
+    post.mockRejectedValue(new ApiError(403, 'Forbidden', 'Ban khong co quyen sua prompt nay.'))
+
+    expect(await resolveKeepLocal((await getConflictForPrompt('p1'))!)).toBe('forbidden')
+    expect((await state()).conflict).toEqual({ conflict_id: 'c-1' })
+  })
+
+  it('409 re-queues the chosen content on the recorded remote version', async () => {
+    await seed()
+    post.mockRejectedValue(new ApiError(409, 'Conflict', 'Du lieu tren server da thay doi'))
+
+    expect(await resolveKeepLocal((await getConflictForPrompt('p1'))!)).toBe('requeued')
     expect(await state()).toEqual({
-      prompt: null,
-      outbox: [{ operation: 'delete', base_version: 4 }],
+      prompt: { title: 'Của tôi', version: 4, has_conflict: 0 },
+      outbox: [{ operation: 'update', base_version: 4 }],
       conflict: null,
     })
   })
 
-  it('merged writes the chosen content locally and sends it', async () => {
+  it('404 on keep_remote forces a snapshot so the pull restores the server copy', async () => {
     await seed()
-    await resolveMerged((await getConflictForPrompt('p1'))!, { title: 'Gộp', content: 'Cả hai', category: null })
+    const db = await getDb()
+    await db.runAsync('INSERT INTO sync_state (space_id, cursor) VALUES (?, 50)', SPACE)
+    post.mockRejectedValue(new ApiError(404, 'NotFound', 'Khong tim thay xung dot can xu ly.'))
 
-    expect(post.mock.calls[0]![1]).toMatchObject({
-      resolution: 'merged',
-      mergedPayload: { title: 'Gộp', content: 'Cả hai', categoryId: null },
-    })
-    expect((await state()).prompt).toEqual({ title: 'Gộp', version: 4, has_conflict: 0 })
+    expect(await resolveKeepRemote((await getConflictForPrompt('p1'))!)).toBe('requeued')
+    expect(await db.getFirstAsync('SELECT cursor FROM sync_state WHERE space_id = ?', SPACE)).toEqual({ cursor: 0 })
+    expect((await state()).conflict).toBeNull()
   })
 
-  it('leaves everything untouched when the server call fails', async () => {
+  it('leaves everything untouched when the server is unreachable', async () => {
     await seed()
     post.mockRejectedValue(new Error('offline'))
     await expect(resolveKeepRemote((await getConflictForPrompt('p1'))!)).rejects.toThrow('offline')
@@ -4921,19 +5401,26 @@ describe('conflicts', () => {
 ```ts
 import type { SQLiteDatabase } from 'expo-sqlite'
 
-import { apiClient } from '@/services/apiClient'
+import { ApiError, apiClient } from '@/services/apiClient'
 
+import { categoryNameFor } from './categoryId'
 import { getDb } from './db'
 import { enqueue } from './outbox'
 import { runSync } from './syncEngine'
-import { buildPayload, type PromptPayload, type RemotePrompt } from './syncPush'
+import {
+  buildPayload,
+  forceSnapshot,
+  type PromptPayload,
+  type RemotePrompt,
+  type ResolveResponse,
+} from './syncPush'
 
 export type ConflictRecord = {
   conflictId: string
   spaceId: string
   promptId: string
-  local: PromptPayload | null
-  remote: RemotePrompt
+  local: PromptPayload | null // null = the local side was a delete
+  remote: RemotePrompt // remote.isDeleted = deleted on another device
   remoteVersion: number
   createdAt: number
 }
@@ -4944,6 +5431,14 @@ export type LocalVersion = {
   category: string | null
   updatedAt: number
 }
+
+export type ResolveOutcome = 'resolved' | 'requeued' | 'forbidden'
+
+type Content = { title: string; content: string; category: string | null }
+
+// What the user chose, re-expressed as a normal outbox operation when the server-side
+// conflict can no longer be resolved (409/404, spec §0 C17).
+type Choice = { kind: 'remote' } | { kind: 'content'; value: Content } | { kind: 'delete' }
 
 type ConflictRow = {
   conflict_id: string
@@ -4982,101 +5477,142 @@ export async function getLocalVersion(promptId: string): Promise<LocalVersion | 
   return row ? { title: row.title, content: row.content, category: row.category, updatedAt: row.updated_at } : null
 }
 
-async function postResolve(conflictId: string, body: object): Promise<void> {
-  await apiClient.post(`/sync/conflicts/${conflictId}/resolve`, body, { auth: true })
+async function postResolve(
+  c: ConflictRecord,
+  body: { resolution: 'keep_local' | 'keep_remote' | 'merged'; mergedPayload?: PromptPayload },
+): Promise<ResolveResponse | 'stale' | 'forbidden'> {
+  try {
+    return await apiClient.post<ResolveResponse>(`/sync/conflicts/${c.conflictId}/resolve`, body, { auth: true })
+  } catch (error) {
+    if (error instanceof ApiError) {
+      // Only the author or a canManage member may keep_local/merged (spec §0 C18).
+      if (error.status === 403 && body.resolution !== 'keep_remote') return 'forbidden'
+      if (error.status === 404 || error.status === 409) return 'stale'
+    }
+    throw error // offline / 5xx: nothing changes, the user can retry
+  }
 }
 
-// Writes the resolved content (or null = leave content as is) and clears bookkeeping.
-async function settle(
-  db: SQLiteDatabase,
-  c: ConflictRecord,
-  content: { title: string; content: string; category: string | null } | null,
-): Promise<void> {
-  await db.runAsync('DELETE FROM sync_outbox WHERE prompt_id = ?', c.promptId)
+async function writeContent(db: SQLiteDatabase, c: ConflictRecord, content: Content, version: number): Promise<void> {
   const now = Date.now()
-  if (content) {
-    await db.runAsync(
-      `INSERT INTO prompts (id, space_id, title, content, category, created_at, updated_at, synced_at, version, has_conflict)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-       ON CONFLICT(id) DO UPDATE SET title = excluded.title, content = excluded.content,
-         category = excluded.category, updated_at = excluded.updated_at, synced_at = excluded.synced_at,
-         version = excluded.version, has_conflict = 0`,
-      c.promptId,
-      c.spaceId,
-      content.title,
-      content.content,
-      content.category,
-      now,
-      now,
-      now,
-      c.remoteVersion,
-    )
-  } else {
-    await db.runAsync(
-      'UPDATE prompts SET version = ?, has_conflict = 0 WHERE id = ?',
-      c.remoteVersion,
-      c.promptId,
-    )
-  }
+  await db.runAsync(
+    `INSERT INTO prompts (id, space_id, title, content, category, created_at, updated_at, synced_at, version, has_conflict)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+     ON CONFLICT(id) DO UPDATE SET title = excluded.title, content = excluded.content,
+       category = excluded.category, updated_at = excluded.updated_at, synced_at = excluded.synced_at,
+       version = excluded.version, has_conflict = 0`,
+    c.promptId,
+    c.spaceId,
+    content.title,
+    content.content,
+    content.category,
+    now,
+    now,
+    now,
+    version,
+  )
+}
+
+async function clearConflict(db: SQLiteDatabase, c: ConflictRecord): Promise<void> {
+  await db.runAsync('DELETE FROM sync_outbox WHERE prompt_id = ?', c.promptId)
   await db.runAsync('DELETE FROM sync_conflicts WHERE conflict_id = ?', c.conflictId)
 }
 
-export async function resolveKeepRemote(c: ConflictRecord): Promise<void> {
-  await postResolve(c.conflictId, { resolution: 'keep_remote' })
+// Success path: the server's answer is authoritative for version and deletion (G8/G9 closed).
+async function settle(c: ConflictRecord, resolved: ResolveResponse, content: Content | null): Promise<void> {
   const db = await getDb()
-  const local = await getLocalVersion(c.promptId)
-  await db.withTransactionAsync(() =>
-    // PromptDetailResponse has no category (gap G5) — keep ours.
-    settle(db, c, { title: c.remote.title, content: c.remote.content, category: local?.category ?? null }),
-  )
+  await db.withTransactionAsync(async () => {
+    await clearConflict(db, c)
+    if (resolved.isDeleted) {
+      await db.runAsync('DELETE FROM prompts WHERE id = ?', c.promptId)
+    } else if (content) {
+      await writeContent(db, c, content, resolved.newVersion)
+    } else {
+      await db.runAsync(
+        'UPDATE prompts SET version = ?, has_conflict = 0, synced_at = ? WHERE id = ?',
+        resolved.newVersion,
+        Date.now(),
+        c.promptId,
+      )
+    }
+  })
   void runSync()
 }
 
-export async function resolveKeepLocal(c: ConflictRecord): Promise<void> {
+async function requeue(c: ConflictRecord, choice: Choice): Promise<void> {
   const db = await getDb()
+  await db.withTransactionAsync(async () => {
+    await clearConflict(db, c)
+    if (choice.kind === 'remote') {
+      await db.runAsync('UPDATE prompts SET has_conflict = 0 WHERE id = ?', c.promptId)
+      await forceSnapshot(db, c.spaceId)
+    } else if (choice.kind === 'delete') {
+      await db.runAsync('DELETE FROM prompts WHERE id = ?', c.promptId)
+      await enqueue(db, c.spaceId, c.promptId, 'delete', c.remoteVersion)
+    } else {
+      await writeContent(db, c, choice.value, c.remoteVersion)
+      await enqueue(db, c.spaceId, c.promptId, 'update', c.remoteVersion)
+    }
+  })
+  void runSync()
+}
+
+async function finish(
+  c: ConflictRecord,
+  answer: ResolveResponse | 'stale' | 'forbidden',
+  content: Content | null,
+  choice: Choice,
+): Promise<ResolveOutcome> {
+  if (answer === 'forbidden') return 'forbidden'
+  if (answer === 'stale') {
+    await requeue(c, choice)
+    return 'requeued'
+  }
+  await settle(c, answer, content)
+  return 'resolved'
+}
+
+export async function resolveKeepRemote(c: ConflictRecord): Promise<ResolveOutcome> {
+  const answer = await postResolve(c, { resolution: 'keep_remote' })
+  const local = await getLocalVersion(c.promptId)
+  // A push conflict's remote carries categoryId only (categoryName is null, spec §0 C19):
+  // name it from the app's derived ids, else keep the local name.
+  let category: string | null = null
+  if (c.remote.categoryId) {
+    category = (await categoryNameFor(c.spaceId, c.remote.categoryId)) ?? local?.category ?? null
+  }
+  return finish(c, answer, { title: c.remote.title, content: c.remote.content, category }, { kind: 'remote' })
+}
+
+export async function resolveKeepLocal(c: ConflictRecord): Promise<ResolveOutcome> {
   const local = await getLocalVersion(c.promptId)
 
   if (!local) {
-    // Delete-vs-edit: keep_local with a null payload fails server-side (gap G9).
-    await postResolve(c.conflictId, { resolution: 'keep_remote' })
-    await db.withTransactionAsync(async () => {
-      await db.runAsync('DELETE FROM sync_outbox WHERE prompt_id = ?', c.promptId)
-      await db.runAsync('DELETE FROM sync_conflicts WHERE conflict_id = ?', c.conflictId)
-      await enqueue(db, c.spaceId, c.promptId, 'delete', c.remoteVersion)
-    })
-    void runSync()
-    return
+    // "Vẫn xoá": the server replays the stored local delete (G9 closed).
+    const answer = await postResolve(c, { resolution: 'keep_local' })
+    return finish(c, answer, null, { kind: 'delete' })
   }
 
-  if (local.updatedAt > c.createdAt) {
-    await postResolve(c.conflictId, {
-      resolution: 'merged',
-      mergedPayload: await buildPayload(c.spaceId, local),
-    })
-  } else {
-    await postResolve(c.conflictId, { resolution: 'keep_local' })
-  }
-  await db.withTransactionAsync(() => settle(db, c, null))
-  void runSync()
+  const content: Content = { title: local.title, content: local.content, category: local.category }
+  const answer =
+    local.updatedAt > c.createdAt
+      ? await postResolve(c, { resolution: 'merged', mergedPayload: await buildPayload(c.spaceId, content, 'update') })
+      : await postResolve(c, { resolution: 'keep_local' })
+  return finish(c, answer, null, { kind: 'content', value: content })
 }
 
-export async function resolveMerged(
-  c: ConflictRecord,
-  merged: { title: string; content: string; category: string | null },
-): Promise<void> {
-  await postResolve(c.conflictId, {
+export async function resolveMerged(c: ConflictRecord, merged: Content): Promise<ResolveOutcome> {
+  const answer = await postResolve(c, {
     resolution: 'merged',
-    mergedPayload: await buildPayload(c.spaceId, merged),
+    mergedPayload: await buildPayload(c.spaceId, merged, 'update'),
   })
-  const db = await getDb()
-  await db.withTransactionAsync(() => settle(db, c, merged))
-  void runSync()
+  return finish(c, answer, merged, { kind: 'content', value: merged })
 }
 ```
 
 - [ ] **Step 4: Run tests and type-check** — `npx jest src/lib/conflicts.test.ts && npx tsc --noEmit` → PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit** (`detect_changes()` first)
 
 ```bash
 git add src/lib/conflicts.ts src/lib/conflicts.test.ts
@@ -5094,10 +5630,12 @@ git commit -m "feat(sync): conflict resolution via /sync/conflicts/{id}/resolve"
 - Modify: `src/navigation/routes.ts`, `src/app/_layout.tsx`, `src/app/prompt-detail.tsx`
 
 **Interfaces:**
-- Consumes: `getConflictForPrompt`, `getLocalVersion`, `resolveKeepRemote`, `resolveKeepLocal`, `resolveMerged` (Task 18); `Prompt.hasConflict` (Task 9).
+- Consumes: `getConflictForPrompt`, `getLocalVersion`, `resolveKeepRemote`, `resolveKeepLocal`, `resolveMerged`, `ResolveOutcome` (Task 18); `Prompt.hasConflict` (Task 9).
 - Produces: route `conflict: '/conflict'` with params `{ promptId: string }`.
 
-- [ ] **Step 1: Route + stack** — `routes.ts`: `conflict: '/conflict',` in `ROUTES` and `conflict: { promptId: string }` in `RouteParams`. `_layout.tsx`: `<Stack.Screen name="conflict" options={{ presentation: 'modal' }} />`.
+Three situations (spec §12): edit vs edit; local delete vs remote edit (`local === null`); local edit vs remote delete (`conflict.remote.isDeleted`). `'forbidden'` (a non-author member in a shared space, spec §0 C18) leaves only "Giữ bản máy chủ" enabled; `'requeued'` (server moved on) tells the user their choice will be synced again.
+
+- [ ] **Step 1: Route + stack** — `routes.ts`: `conflict: '/conflict',` in `ROUTES` and `conflict: { promptId: string }` in `RouteParams` (**`routes.ts` has uncommitted user changes on this branch — confirm with the user and never revert them**). `_layout.tsx`: `<Stack.Screen name="conflict" options={{ presentation: 'modal' }} />`.
 
 - [ ] **Step 2: Create `src/app/conflict.tsx`**
 
@@ -5117,6 +5655,7 @@ import {
   resolveKeepLocal,
   resolveKeepRemote,
   resolveMerged,
+  type ResolveOutcome,
 } from '@/lib/conflicts'
 import { useResponsive } from '@/hooks/useResponsive'
 import { goBack, useRouteParams } from '@/navigation'
@@ -5129,6 +5668,7 @@ export default function ConflictScreen() {
   const [conflict, setConflict] = useState<ConflictRecord | null>(null)
   const [local, setLocal] = useState<LocalVersion | null>(null)
   const [merging, setMerging] = useState(false)
+  const [forbidden, setForbidden] = useState(false)
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
   const [busy, setBusy] = useState(false)
@@ -5141,10 +5681,25 @@ export default function ConflictScreen() {
     }, [promptId]),
   )
 
-  async function run(action: () => Promise<void>) {
+  async function run(action: () => Promise<ResolveOutcome>) {
     setBusy(true)
     try {
-      await action()
+      const outcome = await action()
+      if (outcome === 'forbidden') {
+        setForbidden(true)
+        setMerging(false)
+        Alert.alert(
+          'Không có quyền sửa',
+          'Bạn chỉ có thể giữ bản trên máy chủ vì prompt này do thành viên khác tạo.',
+        )
+        return
+      }
+      if (outcome === 'requeued') {
+        Alert.alert(
+          'Bản trên máy chủ vừa thay đổi',
+          'Lựa chọn của bạn sẽ được đồng bộ lại. Nếu vẫn khác, bạn sẽ được hỏi lại.',
+        )
+      }
       goBack('home')
     } catch (e) {
       Alert.alert('Chưa giải quyết được', toAuthError(e).message)
@@ -5162,6 +5717,7 @@ export default function ConflictScreen() {
   if (!conflict) return <SafeAreaView style={styles.safe} />
 
   const deletedLocally = local === null
+  const deletedRemotely = conflict.remote.isDeleted
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -5210,24 +5766,33 @@ export default function ConflictScreen() {
               </View>
               <View style={styles.panel}>
                 <Text style={styles.panelLabel}>Bản trên máy chủ</Text>
-                <Text style={styles.panelTitle}>{conflict.remote.title}</Text>
-                <Text style={styles.body}>{conflict.remote.content}</Text>
+                {deletedRemotely ? (
+                  <Text style={styles.body}>Prompt đã bị xoá trên thiết bị khác.</Text>
+                ) : (
+                  <>
+                    <Text style={styles.panelTitle}>{conflict.remote.title}</Text>
+                    <Text style={styles.body}>{conflict.remote.content}</Text>
+                  </>
+                )}
               </View>
             </View>
 
             <Button
               label={deletedLocally ? 'Vẫn xoá' : 'Giữ bản của tôi'}
               loading={busy}
+              disabled={forbidden}
               onPress={() => run(() => resolveKeepLocal(conflict))}
             />
             <Button
               variant="tonal"
-              label={deletedLocally ? 'Khôi phục bản máy chủ' : 'Giữ bản máy chủ'}
+              label={
+                deletedLocally ? 'Khôi phục bản máy chủ' : deletedRemotely ? 'Chấp nhận xoá' : 'Giữ bản máy chủ'
+              }
               disabled={busy}
               onPress={() => run(() => resolveKeepRemote(conflict))}
             />
             {!deletedLocally && (
-              <Button variant="tonal" label="Gộp" disabled={busy} onPress={startMerge} />
+              <Button variant="tonal" label="Gộp" disabled={busy || forbidden} onPress={startMerge} />
             )}
           </>
         )}
@@ -5289,11 +5854,11 @@ add `Pressable` to the `react-native` import, and to `useStyles`:
   conflictText: { ...text('bodyMedium', 'semiBold'), color: colors.onErrorContainer },
 ```
 
-(`errorContainer`/`onErrorContainer` are M3 roles in `src/theme/colors.ts`; destructure `shape`/`spacing` in `makeStyles` if the file doesn't already.)
+(`errorContainer`/`onErrorContainer` are M3 roles in `src/theme/colors.ts`; destructure `shape`/`spacing` in `makeStyles` if the file doesn't already.) A prompt deleted locally has no detail screen; its conflict is reached from the sync status in Settings → "Sao lưu & đồng bộ" (list rows from `sync_conflicts` whose prompt is missing) — or accepted as a follow-up if that list does not exist yet.
 
-- [ ] **Step 4: Verify** — `npx tsc --noEmit && npx jest` → PASS. Manual: edit the same prompt on two devices offline, bring both online → the second sees the banner → each of the three buttons resolves and both devices converge after the next sync.
+- [ ] **Step 4: Verify** — `npx tsc --noEmit && npx jest` → PASS. Manual: (a) edit the same prompt on two devices offline, bring both online → the second sees the banner → each button resolves and both devices converge after the next sync; (b) delete on one device, edit on the other → "Vẫn xoá" removes it everywhere; (c) in a team space where you are a plain Member, edit a prompt another member created → the push is rejected and the server copy comes back (Task 14); a conflict on such a prompt only allows "Giữ bản máy chủ".
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit** (`detect_changes()` first)
 
 ```bash
 git add src/app/conflict.tsx src/navigation/routes.ts src/app/_layout.tsx src/app/prompt-detail.tsx
@@ -5606,7 +6171,13 @@ git commit -m "feat(auth): normalise ECDSA signatures to DER for biometric login
 
 ### Task 22: Biometric login library (device key + challenge/verify)
 
-**Depends on:** `2026-09-25-biometric-device-login.md` deployed **and** spec gap G2 closed (`/account/me` returns `userCode`). Until G2 ships, this task can be merged but the UI in Task 23 stays hidden because `user.userCode` is null.
+**Depends on:** `2026-09-25-biometric-device-login.md` — merged on the backend; spec gap G2 — closed (`/account/me` returns `userCode`, already read by Task 6's `toAuthUser`). Task 21 (implemented).
+
+**Contract (verified 2026-09-26 — spec §0 C25–C28; `AioKin/Controllers/Auth/BiometricController.cs`, `AioKin/Models/InputModel/Auth/Biometric/BiometricRequests.cs`, `AioKin/Services/Auth/Biometric/BiometricAuthService.cs`, `BiometricSignature.cs`):**
+- `POST /auth/biometric/register` (auth) `{ deviceId ≤100, deviceName? ≤120, platform? ≤20, publicKey ≤256 }` → envelope, no data. `deviceId` **must equal the deviceId of the current session** (the one sent at login), else `403 Forbidden`; `publicKey` must be base64 SPKI of a **P-256** key, else `400 InvalidPublicKey`.
+- `POST /auth/biometric/challenge` (anonymous, rate-limited) `{ userCode, deviceId }` → **envelope** `data = { challengeId, nonce }` — *corrected: the first draft treated it as raw.* Always 200 regardless of enrollment; `500 InternalError` if the server can't store the challenge.
+- `POST /auth/biometric/verify` (anonymous, strict rate limit) `{ challengeId, signature }` → envelope `data = TokenResponse` (snake_case). Signature = base64 **DER** ECDSA-SHA256 over the raw nonce bytes. Every failure = `401 InvalidCredentials`. Success revokes the device's previous sessions.
+- `DELETE /auth/biometric/{deviceId}` (auth) → `404 NotFound` when nothing is enrolled; revoking the caller's own device does not sign it out.
 
 **Files:**
 - Modify: `package.json` (+ lockfiles), `app.json`
@@ -5646,7 +6217,18 @@ jest.mock('@sbaiahmed1/react-native-biometrics', () => ({
   SignatureAlgorithm: { SHA256withECDSA: 'SHA256withECDSA' },
   InputEncoding: { Base64: 'base64' },
 }))
-jest.mock('@/services/apiClient', () => ({ apiClient: { post: jest.fn(), delete: jest.fn() } }))
+jest.mock('@/services/apiClient', () => {
+  class ApiError extends Error {
+    status: number
+    code: string
+    constructor(status: number, code: string, message: string) {
+      super(message)
+      this.status = status
+      this.code = code
+    }
+  }
+  return { ApiError, apiClient: { post: jest.fn(), delete: jest.fn() } }
+})
 jest.mock('./deviceIdentity', () => ({
   getDeviceId: async () => 'dev-1',
   getDeviceInfo: async () => ({ deviceId: 'dev-1', deviceName: 'Pixel', platform: 'android' }),
@@ -5655,7 +6237,7 @@ jest.mock('./biometricSignature', () => ({ ensureDerSignature: (s: string) => `d
 
 import { deleteKeys, signWithOptions } from '@sbaiahmed1/react-native-biometrics'
 
-import { apiClient } from '@/services/apiClient'
+import { ApiError, apiClient } from '@/services/apiClient'
 
 import {
   disableBiometricLogin,
@@ -5685,26 +6267,32 @@ describe('biometricLogin', () => {
     expect(await getBiometricEnrollment()).toEqual({ userCode: 'USR_1', email: 'a@b.com' })
   })
 
-  it('refuses to enable without a userCode (gap G2)', async () => {
+  it('refuses to enable without a userCode', async () => {
     await expect(enableBiometricLogin({ userCode: null, email: null })).rejects.toThrow('user_code_unavailable')
+  })
+
+  it('a 403 on register (session bound to another deviceId) deletes the key and reports it', async () => {
+    post.mockRejectedValueOnce(new ApiError(403, 'Forbidden', 'Chi duoc dang ky sinh trac cho chinh thiet bi...'))
+    await expect(enableBiometricLogin({ userCode: 'USR_1', email: null })).rejects.toThrow('biometric_device_mismatch')
+    expect(deleteKeys).toHaveBeenCalledWith('aiokin.biometric')
+    expect(await getBiometricEnrollment()).toBeNull()
   })
 
   it('signs the nonce and stores the tokens from the envelope', async () => {
     await enableBiometricLogin({ userCode: 'USR_1', email: null })
     post.mockReset()
     post
-      .mockResolvedValueOnce({ challengeId: 'ch-1', nonce: 'NONCE' })
+      .mockResolvedValueOnce({ challengeId: 'ch-1', nonce: 'NONCE' }) // envelope data, unwrapped by apiClient
       .mockResolvedValueOnce({ access_token: 'a', refresh_token: 'r', expires_in: 900 })
     ;(signWithOptions as jest.Mock).mockResolvedValue({ success: true, signature: 'SIG' })
 
     await expect(signInWithBiometric()).resolves.toBe('signed_in')
 
-    expect(post).toHaveBeenNthCalledWith(
-      1,
-      '/auth/biometric/challenge',
-      { userCode: 'USR_1', deviceId: 'dev-1' },
-      { envelope: false },
-    )
+    // Envelope endpoint (spec §0 C25): default options, no `envelope: false`.
+    expect(post).toHaveBeenNthCalledWith(1, '/auth/biometric/challenge', {
+      userCode: 'USR_1',
+      deviceId: 'dev-1',
+    })
     expect(signWithOptions).toHaveBeenCalledWith(
       expect.objectContaining({ keyAlias: 'aiokin.biometric', data: 'NONCE', inputEncoding: 'base64', algorithm: 'SHA256withECDSA' }),
     )
@@ -5754,7 +6342,7 @@ import {
 } from '@sbaiahmed1/react-native-biometrics'
 import * as SecureStore from 'expo-secure-store'
 
-import { apiClient } from '@/services/apiClient'
+import { ApiError, apiClient } from '@/services/apiClient'
 
 import { ensureDerSignature } from './biometricSignature'
 import { getDeviceId, getDeviceInfo } from './deviceIdentity'
@@ -5782,14 +6370,23 @@ export async function enableBiometricLogin(user: {
   userCode: string | null
   email: string | null
 }): Promise<void> {
-  if (!user.userCode) throw new Error('user_code_unavailable') // spec gap G2
+  if (!user.userCode) throw new Error('user_code_unavailable') // profile not loaded yet
   // EC P-256 in Secure Enclave / Android Keystore, biometric-gated per use.
   const { publicKey } = await createKeys(KEY_ALIAS, 'ec256')
-  await apiClient.post(
-    '/auth/biometric/register',
-    { ...(await getDeviceInfo()), publicKey },
-    { auth: true },
-  )
+  const device = await getDeviceInfo()
+  try {
+    // deviceId must be the one this session was issued for (sent at login) — the server
+    // compares it with the session and answers 403 otherwise (spec §0 C26).
+    await apiClient.post(
+      '/auth/biometric/register',
+      { ...device, deviceName: device.deviceName.slice(0, 120), publicKey },
+      { auth: true },
+    )
+  } catch (error) {
+    await deleteKeys(KEY_ALIAS) // never keep a key the server doesn't know
+    if (error instanceof ApiError && error.status === 403) throw new Error('biometric_device_mismatch')
+    throw error // 400 InvalidPublicKey (not P-256 SPKI), network, …
+  }
   const enrollment: BiometricEnrollment = { userCode: user.userCode, email: user.email }
   await SecureStore.setItemAsync(ENROLLMENT_KEY, JSON.stringify(enrollment), OPTIONS)
 }
@@ -5798,7 +6395,9 @@ export async function disableBiometricLogin(): Promise<void> {
   try {
     await apiClient.delete(`/auth/biometric/${encodeURIComponent(await getDeviceId())}`, { auth: true })
   } catch {
-    // Best effort: the local key is deleted anyway, so this device can no longer sign.
+    // Best effort (404 = already revoked server-side, e.g. by logout-all): the local key is
+    // deleted anyway, so this device can no longer sign. Revoking our own device does not
+    // sign us out (spec §0 C28).
   }
   await deleteKeys(KEY_ALIAS)
   await SecureStore.deleteItemAsync(ENROLLMENT_KEY, OPTIONS)
@@ -5816,11 +6415,10 @@ export async function signInWithBiometric(): Promise<'signed_in' | 'cancelled'> 
   const enrollment = await getBiometricEnrollment()
   if (!enrollment) throw new Error('biometric_not_enrolled')
 
-  // Raw (non-envelope) response — BiometricController.Challenge returns Ok(response).
+  // OperationResult envelope — BiometricController.Challenge → ToActionResult (spec §0 C25).
   const challenge = await apiClient.post<{ challengeId: string; nonce: string }>(
     '/auth/biometric/challenge',
     { userCode: enrollment.userCode, deviceId: await getDeviceId() },
-    { envelope: false },
   )
 
   setOAuthInProgress(true) // the OS prompt backgrounds the app; don't trigger app lock
@@ -5863,7 +6461,7 @@ git commit -m "feat(auth): biometric device-key login against AioKin"
 
 ### Task 23: Biometric login UI (Settings toggle, login button)
 
-**Depends on:** Task 22 (and gap G2 for the toggle to appear).
+**Depends on:** Task 22. (Gap G2 is closed, so `user.userCode` is populated after `/account/me` and the toggle appears for every signed-in user on a device with biometrics.)
 
 **Files:**
 - Modify: `src/app/(drawers)/settings.tsx`, `src/app/onboarding/login.tsx`, `src/app/onboarding/sync.tsx`
@@ -5890,7 +6488,12 @@ git commit -m "feat(auth): biometric device-key login against AioKin"
       }
       setBiometricLogin(next)
     } catch (e) {
-      Alert.alert('Không đổi được cài đặt', toAuthError(e).message)
+      // 403 on register: this session was issued for a different deviceId (spec §0 C26).
+      const message =
+        e instanceof Error && e.message === 'biometric_device_mismatch'
+          ? 'Hãy đăng xuất rồi đăng nhập lại trên thiết bị này, sau đó bật lại.'
+          : toAuthError(e).message
+      Alert.alert('Không đổi được cài đặt', message)
     }
   }
 ```
@@ -5951,7 +6554,7 @@ and above the e-mail fields:
 
 - [ ] **Step 3: Different account → forget old enrollment** — in `sync.tsx` import `forgetBiometricForOtherUser` and `useAuthStore` selector for `userCode` (`const userCode = useAuthStore((s) => s.user?.userCode ?? null)`), and at the start of the effect's async block: `await forgetBiometricForOtherUser(userCode).catch(() => undefined)`.
 
-- [ ] **Step 4: Verify** — `npx tsc --noEmit && npx jest` → PASS. Manual (device, backend with B-BIO + G2): enable in Settings → sign out → login screen shows the biometric button → Face ID/fingerprint → signed in; disable → button gone; app-lock toggle still behaves exactly as before.
+- [ ] **Step 4: Verify** — `npx tsc --noEmit && npx jest` → PASS. Manual (device, current backend): enable in Settings → sign out → login screen shows the biometric button → Face ID/fingerprint → signed in; disable → button gone; app-lock toggle still behaves exactly as before.
 
 - [ ] **Step 5: Commit**
 
@@ -6005,4 +6608,6 @@ git commit -m "chore: remove Supabase client, schema and env usage"
 
 - **Spec coverage:** §4 → Tasks 1, 3; §5 → 2; §6 → 4–8; §6.1 (OAuth) → Google removed in Task 7, implementation deferred to gap G1; §7 → 20; §8 → 21–23; §9 → 9, 10; §10 → 11, 12, 17; §11 → 13–16; §12 → 18, 19; §13 → 3, 5, 7, 16, 17; §15 → each gap is referenced where the client works around it; §16 → task order.
 - **Type consistency checked:** `LOCAL_SPACE_ID`, `Space`, `PromptPayload`, `RemotePrompt`, `RawTokens`, `normalizeTokens`, `runSync`, `enqueue(db, spaceId, promptId, op, baseVersion)` are used with the same names/signatures in every task.
+- **2026-09-26 revision (backend `49299e0`):** Tasks 14–19 and 22–23 re-derived from the implemented backend (spec §0 C1–C30). Signatures that changed and are used consistently: `buildPayload(spaceId, prompt, 'insert' | 'update')`; `pushSpace(spaceId, { batchSize?, skipSeqs? })` → `{ applied, conflicts, rejected, remaining }`; `claimBatch(db, spaceId, limit, skipSeqs?)`; `completeRow(db, seq, newVersion?)` (as implemented in Task 13); `forceSnapshot(db, spaceId)`; `ResolveResponse`; `ResolveOutcome = 'resolved' | 'requeued' | 'forbidden'`; `SyncSummary.rejected`. No test mocks the removed shapes (`snapshotUrl`, `payloadJson`, bare push arrays, raw challenge).
+- **Open decision before Task 14:** spec drift D1 (`description` is replaced on every update; schema v3 has no column for it).
 - **Known manual-only checks:** background task scheduling, biometric key generation, OS prompts — each task lists its device check.
