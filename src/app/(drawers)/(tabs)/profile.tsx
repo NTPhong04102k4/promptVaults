@@ -1,7 +1,9 @@
-import { Pressable, Text, View } from 'react-native'
+import { Alert, Pressable, Text, View } from 'react-native'
 
 import { Avatar, SettingsRow } from '@/components/ui'
+import { clearSyncedData, pendingChanges } from '@/lib/accountData'
 import { getDisplayName, getInitials } from '@/lib/format'
+import { runSync } from '@/lib/syncEngine'
 import { push, replace } from '@/navigation'
 import { useAuthStore } from '@/store'
 import { makeStyles, text } from '@/theme'
@@ -10,6 +12,35 @@ export default function ProfileScreen() {
   const styles = useStyles()
   const user = useAuthStore((state) => state.user)
   const signOut = useAuthStore((state) => state.signOut)
+
+  async function handleSignOut() {
+    const finish = async () => {
+      await signOut()
+      await clearSyncedData()
+      replace('welcome')
+    }
+    const pending = await pendingChanges()
+    if (pending === 0) {
+      await finish()
+      return
+    }
+    Alert.alert(
+      'Còn thay đổi chưa đồng bộ',
+      `Có ${pending} thay đổi chưa đồng bộ. Đăng xuất sẽ mất chúng.`,
+      [
+        { text: 'Huỷ', style: 'cancel' },
+        {
+          text: 'Đồng bộ rồi đăng xuất',
+          onPress: async () => {
+            await runSync()
+            if ((await pendingChanges()) === 0) await finish()
+            else Alert.alert('Chưa đồng bộ xong', 'Hãy thử lại khi có mạng.')
+          },
+        },
+        { text: 'Vẫn đăng xuất', style: 'destructive', onPress: finish },
+      ],
+    )
+  }
 
   return (
     <View style={styles.container}>
@@ -42,14 +73,7 @@ export default function ProfileScreen() {
               label="Thiết bị đăng nhập"
               onPress={() => push('sessions')}
             />
-            <SettingsRow
-              icon="settings"
-              label="Đăng xuất"
-              onPress={async () => {
-                await signOut()
-                replace('welcome')
-              }}
-            />
+            <SettingsRow icon="settings" label="Đăng xuất" onPress={handleSignOut} />
           </>
         ) : (
           <SettingsRow icon="settings" label="Đăng nhập" onPress={() => push('login')} />

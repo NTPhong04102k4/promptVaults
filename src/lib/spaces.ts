@@ -1,8 +1,9 @@
 import type { SQLiteDatabase } from 'expo-sqlite'
 
 import { apiClient } from '@/services/apiClient'
+import { useSpaceStore } from '@/store/spaceStore'
 
-import { getDb } from './db'
+import { getDb, LOCAL_SPACE_ID } from './db'
 
 export type SpaceKind = 'local' | 'personal' | 'family' | 'team'
 
@@ -99,6 +100,16 @@ export async function fetchAndStoreMySpaces(): Promise<Space[]> {
       if (!keep.has(id)) await removeSpaceData(db, id)
     }
   })
+
+  // Task 12 review carry-forward: if the space the UI was showing just lost access (removed
+  // above), don't leave currentSpaceId pointing at a row that no longer exists — usePrompts
+  // would then silently render an empty list with no indication access was lost.
+  const { currentSpaceId, setCurrentSpace } = useSpaceStore.getState()
+  if (currentSpaceId !== LOCAL_SPACE_ID && !keep.has(currentSpaceId)) {
+    const personal = spaces.find((s) => s.kind === 'personal')
+    setCurrentSpace(personal?.id ?? spaces[0]?.id ?? LOCAL_SPACE_ID)
+  }
+
   return spaces
 }
 

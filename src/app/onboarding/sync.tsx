@@ -1,85 +1,115 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ActivityIndicator, Pressable, View } from 'react-native'
 
 import { ThemedText } from '@/components/Themed'
-import { pullCloudPromptsToLocal, pushLocalPromptsToCloud } from '@/lib/sync'
-import { resetTo } from '@/navigation'
+import { Button } from '@/components/ui'
+import { adoptLocalPrompts, countLocalPrompts, prepareSignedInUser } from '@/lib/accountData'
+import type { Space } from '@/lib/spaces'
+import { runSync } from '@/lib/syncEngine'
+import { replace, resetTo } from '@/navigation'
+import { useAuthStore } from '@/store'
 import { makeStyles, useTheme } from '@/theme'
 
+type Phase = 'loading' | 'ask' | 'working' | 'done' | 'error'
+
+// Shown after every sign-in and from Settings → "Sao lưu & đồng bộ" (spec §10.3).
 export default function SyncScreen() {
   const styles = useStyles()
   const { colors } = useTheme()
-  const [status, setStatus] = useState<'idle' | 'syncing' | 'done'>('idle')
-  const [result, setResult] = useState<{ synced: number; failed: number; pulled: number } | null>(
-    null,
-  )
-  const [error, setError] = useState<string | null>(null)
+  const userId = useAuthStore((state) => state.user?.id ?? null)
+  const email = useAuthStore((state) => state.user?.email ?? null)
+  const [phase, setPhase] = useState<Phase>('loading')
+  const [localCount, setLocalCount] = useState(0)
+  const [personal, setPersonal] = useState<Space | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
 
-  async function handleSync() {
-    setError(null)
-    setResult(null)
-    setStatus('syncing')
-    try {
-      const pullResult = await pullCloudPromptsToLocal()
-      const pushResult = await pushLocalPromptsToCloud()
-      setResult({ ...pushResult, pulled: pullResult.pulled })
-      setStatus('done')
-    } catch {
-      setError('Đồng bộ thất bại, thử lại sau.')
-      setStatus('idle')
+  useEffect(() => {
+    if (!userId) {
+      replace('login')
+      return
     }
+    let active = true
+    ;(async () => {
+      try {
+        const space = await prepareSignedInUser(userId)
+        const count = await countLocalPrompts()
+        if (!active) return
+        setPersonal(space)
+        setLocalCount(count)
+        if (count === 0 || !space) {
+          runSync().catch(() => undefined)
+          resetTo('home')
+          return
+        }
+        setPhase('ask')
+      } catch {
+        if (!active) return
+        setMessage('Không kết nối được máy chủ. Prompt vẫn được lưu trên máy này.')
+        setPhase('error')
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [userId])
+
+  async function handleAdopt() {
+    if (!personal) return
+    setPhase('working')
+    const adopted = await adoptLocalPrompts(personal.id)
+    const summary = await runSync()
+    setMessage(
+      summary.errors > 0
+        ? `Đã chuyển ${adopted} prompt vào Kho cá nhân. Sẽ tải lên khi có mạng.`
+        : `Đã đưa ${adopted} prompt lên Kho cá nhân.`,
+    )
+    setPhase('done')
+  }
+
+  function handleLater() {
+    runSync().catch(() => undefined)
+    resetTo('home')
+  }
+
+  if (phase === 'loading' || phase === 'working') {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    )
   }
 
   return (
     <View style={styles.container}>
-      <ThemedText variant="titleLarge" style={styles.title}>
-        Đồng bộ dữ liệu?
-      </ThemedText>
-      <ThemedText color="secondary" style={styles.subtitle}>
-        Đồng bộ prompt giữa máy này và tài khoản của bạn — đẩy prompt mới trên máy lên, và tải về
-        prompt đã lưu từ thiết bị khác.
-      </ThemedText>
+      {phase === 'ask' && (
+        <>
+          <ThemedText variant="titleLarge" style={styles.center}>
+            Đồng bộ prompt trên máy này?
+          </ThemedText>
+          <ThemedText color="secondary" style={styles.center}>
+            Đưa {localCount} prompt trên máy này vào Kho cá nhân của {email ?? 'tài khoản'} để dùng trên
+            mọi thiết bị.
+          </ThemedText>
+          <Button label="Đưa lên" onPress={handleAdopt} />
+        </>
+      )}
 
-      {error && (
-        <ThemedText color="error" style={styles.resultText}>
-          {error}
+      {(phase === 'done' || phase === 'error') && message && (
+        <ThemedText color={phase === 'error' ? 'error' : 'primary'} style={styles.center}>
+          {message}
         </ThemedText>
       )}
 
-      {status === 'done' && result && (
-        <ThemedText color="primary" style={styles.resultText}>
-          Đã gửi {result.synced} prompt{result.failed > 0 ? `, ${result.failed} lỗi` : ''}, tải về{' '}
-          {result.pulled} prompt.
-        </ThemedText>
-      )}
-
-      <Pressable style={styles.primaryButton} onPress={handleSync} disabled={status === 'syncing'}>
-        {status === 'syncing' ? (
-          <ActivityIndicator color={colors.onPrimary} />
-        ) : (
-          <ThemedText style={{ color: colors.onPrimary, fontWeight: '600' }}>Đồng bộ ngay</ThemedText>
-        )}
-      </Pressable>
-
-      <Pressable onPress={() => resetTo('home')}>
-        <ThemedText color="primary" style={styles.secondaryText}>
-          Để sau
+      <Pressable onPress={phase === 'ask' ? handleLater : () => resetTo('home')}>
+        <ThemedText color="primary" style={styles.center}>
+          {phase === 'ask' ? 'Để sau' : 'Về trang chủ'}
         </ThemedText>
       </Pressable>
     </View>
   )
 }
 
-const useStyles = makeStyles(({ colors, shape, spacing }) => ({
+const useStyles = makeStyles(({ spacing }) => ({
   container: { flex: 1, justifyContent: 'center', padding: spacing.xl, gap: spacing.lg },
-  title: { textAlign: 'center' },
-  subtitle: { textAlign: 'center' },
-  resultText: { textAlign: 'center' },
-  primaryButton: {
-    padding: 14,
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: shape.medium,
-  },
-  secondaryText: { textAlign: 'center', marginTop: spacing.sm },
+  center: { textAlign: 'center' },
 }))
