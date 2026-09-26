@@ -2,10 +2,16 @@ import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 
 import { clearSyncedData } from '@/lib/accountData'
-import { type AccountProfile, getMe, logout } from '@/lib/authApi'
+import { type AccountProfile, getMe, revokeSession } from '@/lib/authApi'
 import { LargeSecureStore } from '@/lib/secureStorage'
 import { awaitIdle, runSync } from '@/lib/syncEngine'
-import { getTokens, onTokensCleared } from '@/lib/tokenStore'
+import {
+  clearTokens,
+  getTokens,
+  isSignOutPending,
+  onTokensCleared,
+  setSignOutPending,
+} from '@/lib/tokenStore'
 
 // Tokens live in src/lib/tokenStore (SecureStore) — this store only keeps what the UI
 // needs to render instantly on cold start.
@@ -54,9 +60,9 @@ export function toAuthUser(profile: AccountProfile | null): AuthUser | null {
 }
 
 // apiClient has no request timeout/AbortController, so any of signOut()'s network-dependent
-// steps (the best-effort flush, logout()'s server-side revoke) could otherwise hang on a
+// steps (the best-effort flush, the server-side session revoke) could otherwise hang on a
 // stalled network (captive portal, half-open connection) for as long as the OS TCP timeout —
-// Task 17 fix rounds 2 (the flush) and 3 (logout() itself; every awaited step needs a ceiling).
+// Task 17 fix rounds 2 (the flush) and 3 (the revoke; every awaited step needs a ceiling).
 const NETWORK_STEP_TIMEOUT_MS = 5000
 
 // Resolves with `promise`'s value (or undefined on timeout/rejection) after at most `ms`.
@@ -97,16 +103,39 @@ export const useAuthStore = create<AuthState>()(
       // synced-data wipe happens (Task 17) — never duplicate it at a call site. awaitIdle()
       // closes the race where a sync already mid-flight would otherwise finish writing the
       // old account's rows back to disk after clearSyncedData() wipes them.
+      //
+      // Token lifecycle (Task 17 fix round 4): LOCAL state is cleared deterministically, with
+      // no network in the way; only the server-side revoke is best-effort. Previously the
+      // local token clear lived in logout()'s `finally`, behind the /auth/logout POST — when
+      // the bounded wait gave up on a stalled POST, sign-out "finished" with the tokens still
+      // in SecureStore (an app kill then silently resumed the old session with its owner
+      // reset), and the POST's late `finally` later cleared whichever tokens were current —
+      // possibly the NEXT account's.
       signOut: async () => {
-        // logout() already treats a failed/offline server-side revoke as best-effort and
-        // always clears local tokens itself (src/lib/authApi.ts) — but apiClient has no
-        // request timeout, so a stalled network could still hang the POST forever. Bounding
-        // it here means EVERY awaited step in signOut() now has a ceiling, not just the
-        // sync flush (Task 17 fix round 3, issue 1).
-        await withTimeout(logout(), NETWORK_STEP_TIMEOUT_MS)
+        // Crash marker first: if the app dies anywhere before the wipe completes, the next
+        // cold start finishes this sign-out before rendering (see restoreSession()).
+        await setSignOutPending(true)
+        const tokens = await getTokens().catch(() => null)
+        // Unconditional: sign-out clears whatever session is current. Also makes any sync
+        // still in flight fail fast on its next request instead of writing more data.
+        // A keystore fault on the delete (the in-memory copy is already gone by then) must not
+        // skip the wipe; it just leaves the crash marker set so the next launch retries.
+        let tokensCleared = true
+        await clearTokens('signout').catch(() => {
+          tokensCleared = false
+        })
+        // Started now (runs alongside the sync wait + wipe), awaited last and bounded —
+        // apiClient has no request timeout (fix round 3). revokeSession() is handed this exact
+        // session and never touches the token store, so however late it settles it can't
+        // affect a newer sign-in.
+        const revoke = tokens ? revokeSession(tokens) : Promise.resolve()
         await awaitIdle()
         await clearSyncedData()
         set({ user: null })
+        // Only once tokens AND data are gone — a failed wipe (thrown above) or token delete
+        // leaves the marker for a retry on the next cold start.
+        if (tokensCleared) await setSignOutPending(false)
+        await withTimeout(revoke, NETWORK_STEP_TIMEOUT_MS)
       },
     }),
     {
@@ -156,6 +185,13 @@ async function restoreSession(): Promise<void> {
           }
         })
       })
+    }
+    // A sign-out the app died in the middle of (fix round 4): finish it before anything renders
+    // — whether or not the tokens were already cleared, and regardless of keepSignedIn. Never
+    // silently resume that session, and never show a guest the half-wiped previous account.
+    if (await isSignOutPending()) {
+      await useAuthStore.getState().signOut()
+      return
     }
     const tokens = await getTokens()
     if (!tokens) {

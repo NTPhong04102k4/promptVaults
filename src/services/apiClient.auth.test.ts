@@ -4,7 +4,13 @@ jest.mock('@/lib/deviceIdentity', () => ({
 
 import * as SecureStore from 'expo-secure-store'
 
-import { getTokens, onTokensCleared, resetTokenCacheForTests, setTokens } from '@/lib/tokenStore'
+import {
+  clearTokens,
+  getTokens,
+  onTokensCleared,
+  resetTokenCacheForTests,
+  setTokens,
+} from '@/lib/tokenStore'
 
 import { apiClient } from './apiClient'
 
@@ -141,6 +147,92 @@ describe('apiClient auth', () => {
 
     expect(fetchMock.mock.calls[0]![0]).toMatch(/\/auth\/refresh-token$/)
     expect(authHeader(fetchMock.mock.calls[1]![1])).toBe('Bearer new-access')
+  })
+
+  // Task 17 fix round 4: a refresh POST that stalls past a sign-out (e.g. inside a sync that
+  // signOut() gave up waiting on) must not resurrect the signed-out session, nor clear a newer
+  // one, when it finally settles.
+  describe('a refresh that settles after the session changed', () => {
+    function deferredRefresh(response: { status: number; body: unknown }) {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const fn = jest.fn(async (url: string) => {
+        if (url.endsWith('/auth/refresh-token')) await gate
+        const { status, body } = url.endsWith('/auth/refresh-token')
+          ? response
+          : { status: 200, body: { success: true, data: 1 } }
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          statusText: String(status),
+          text: async () => JSON.stringify(body),
+          json: async () => body,
+        }
+      })
+      globalThis.fetch = fn as unknown as typeof fetch
+      return { fn, release }
+    }
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+    it('does not resurrect tokens that were cleared by a sign-out mid-refresh', async () => {
+      await setTokens({ accessToken: 'old-access', refreshToken: 'old-refresh', expiresAt: Date.now() - 1 })
+      const { release } = deferredRefresh({
+        status: 200,
+        body: { access_token: 'late-access', refresh_token: 'late-refresh', expires_in: 900 },
+      })
+
+      const pending = apiClient.get('/account/me', { auth: true })
+      await tick()
+      await clearTokens('signout')
+      release()
+
+      await expect(pending).rejects.toMatchObject({ code: 'session_expired' })
+      resetTokenCacheForTests()
+      expect(await getTokens()).toBeNull()
+    })
+
+    it('does not overwrite a different account that signed in mid-refresh', async () => {
+      await setTokens({ accessToken: 'old-access', refreshToken: 'old-refresh', expiresAt: Date.now() - 1 })
+      const { release } = deferredRefresh({
+        status: 200,
+        body: { access_token: 'late-access', refresh_token: 'late-refresh', expires_in: 900 },
+      })
+      const sessionB = { accessToken: 'b-access', refreshToken: 'b-refresh', expiresAt: Date.now() + 600_000 }
+
+      const pending = apiClient.get('/account/me', { auth: true }).catch(() => undefined)
+      await tick()
+      await clearTokens('signout')
+      await setTokens(sessionB)
+      release()
+      await pending
+
+      resetTokenCacheForTests()
+      expect(await getTokens()).toEqual(sessionB)
+    })
+
+    it('does not clear (or fire "expired" for) a different account when the stale refresh is rejected', async () => {
+      await setTokens({ accessToken: 'old-access', refreshToken: 'old-refresh', expiresAt: Date.now() - 1 })
+      const { release } = deferredRefresh({
+        status: 401,
+        body: { success: false, errorCode: 'InvalidRefreshToken', message: 'x' },
+      })
+      const sessionB = { accessToken: 'b-access', refreshToken: 'b-refresh', expiresAt: Date.now() + 600_000 }
+
+      const pending = apiClient.get('/account/me', { auth: true }).catch(() => undefined)
+      await tick()
+      await clearTokens('signout')
+      await setTokens(sessionB)
+      const listener = jest.fn()
+      const stop = onTokensCleared(listener)
+      release()
+      await pending
+
+      expect(listener).not.toHaveBeenCalled()
+      expect(await getTokens()).toEqual(sessionB)
+      stop()
+    })
   })
 
   it('skipAuthRefresh: rejects the 401 as-is without refreshing, clearing tokens, or firing the cleared event', async () => {

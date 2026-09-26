@@ -4,7 +4,7 @@ jest.mock('./deviceIdentity', () => ({
 
 import * as SecureStore from 'expo-secure-store'
 
-import { login, logout, register, resetPassword, verifyOtp, verifyPasswordOtp } from './authApi'
+import { login, register, resetPassword, revokeSession, verifyOtp, verifyPasswordOtp } from './authApi'
 import { getTokens, onTokensCleared, resetTokenCacheForTests, setTokens } from './tokenStore'
 
 // expo-secure-store is auto-mocked from __mocks__/expo-secure-store.js (see ruling P16);
@@ -119,67 +119,48 @@ describe('authApi', () => {
     })
   })
 
-  it('logout clears tokens even when the server call fails', async () => {
-    await setTokens({ accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 600_000 })
+  // Task 17 fix round 4: the server-side revoke is a pure network call. It is handed the exact
+  // session to revoke and never reads or writes the token store — local sign-out is
+  // authStore.signOut()'s job, done promptly and independently of this (possibly stalled) POST.
+  const sessionA = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 600_000 }
+
+  it('revokeSession posts the given refresh token with the given access token as bearer', async () => {
+    const fn = mockFetchOnce(200, { success: true })
+
+    await revokeSession(sessionA)
+
+    expect(fn.mock.calls[0]![0]).toMatch(/\/auth\/logout$/)
+    expect(sentBody(fn)).toEqual({ refreshToken: 'r' })
+    expect(((fn.mock.calls[0]![1] as RequestInit).headers as Record<string, string>).Authorization).toBe(
+      'Bearer a',
+    )
+  })
+
+  it('revokeSession works with no tokens stored at all (local sign-out already happened)', async () => {
+    const fn = mockFetchOnce(200, { success: true })
+
+    await revokeSession(sessionA)
+
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('revokeSession never throws when offline', async () => {
     globalThis.fetch = jest.fn().mockRejectedValue(new TypeError('offline')) as unknown as typeof fetch
-
-    await logout()
-
-    expect(await getTokens()).toBeNull()
+    await expect(revokeSession(sessionA)).resolves.toBeUndefined()
   })
 
-  it('logout does not surface a "session expired" event when the session is already dead', async () => {
-    await setTokens({ accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 600_000 })
+  it('revokeSession never refreshes, clears, or fires a token event — even on a 401 or with an expired token', async () => {
+    const newer = { accessToken: 'b', refreshToken: 'b-r', expiresAt: Date.now() + 600_000 }
+    await setTokens(newer)
     const listener = jest.fn()
     const stop = onTokensCleared(listener)
-    globalThis.fetch = jest.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      statusText: '401',
-      json: async () => ({ success: false, errorCode: 'Unauthorized', message: 'x' }),
-      text: async () => JSON.stringify({ success: false, errorCode: 'Unauthorized', message: 'x' }),
-    }) as unknown as typeof fetch
+    const fn = mockFetchOnce(401, { success: false, errorCode: 'Unauthorized', message: 'x' })
 
-    await logout()
-
-    expect(await getTokens()).toBeNull()
-    expect(listener).not.toHaveBeenCalledWith('expired')
-    expect(listener).toHaveBeenCalledWith('signout')
-    stop()
-  })
-
-  it('logout with an already-expired access token neither refreshes nor fires "expired", even when refresh would fail', async () => {
-    await setTokens({ accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() - 1 })
-    const listener = jest.fn()
-    const stop = onTokensCleared(listener)
-    const fn = jest.fn(async (url: string) => {
-      // If logout ever triggers a proactive/on-401 refresh, this would reject it —
-      // proving the assertions below actually exercise the no-refresh path.
-      if (url.endsWith('/auth/refresh-token')) {
-        return {
-          ok: false,
-          status: 401,
-          statusText: '401',
-          json: async () => ({ success: false, errorCode: 'InvalidRefreshToken', message: 'x' }),
-          text: async () => JSON.stringify({ success: false, errorCode: 'InvalidRefreshToken', message: 'x' }),
-        }
-      }
-      return {
-        ok: true,
-        status: 200,
-        statusText: '200',
-        json: async () => ({ success: true }),
-        text: async () => JSON.stringify({ success: true }),
-      }
-    })
-    globalThis.fetch = fn as unknown as typeof fetch
-
-    await logout()
+    await revokeSession({ ...sessionA, expiresAt: Date.now() - 1 })
 
     expect(fn.mock.calls.filter(([u]) => (u as string).endsWith('/auth/refresh-token'))).toHaveLength(0)
-    expect(listener).not.toHaveBeenCalledWith('expired')
-    expect(listener).toHaveBeenCalledWith('signout')
-    expect(await getTokens()).toBeNull()
+    expect(listener).not.toHaveBeenCalled()
+    expect(await getTokens()).toEqual(newer)
     stop()
   })
 })

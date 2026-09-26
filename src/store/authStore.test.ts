@@ -1,6 +1,6 @@
 jest.mock('@/lib/authApi', () => ({
   getMe: jest.fn(),
-  logout: jest.fn(),
+  revokeSession: jest.fn(),
 }))
 jest.mock('@/lib/accountData', () => ({
   clearSyncedData: jest.fn(),
@@ -10,8 +10,11 @@ jest.mock('@/lib/syncEngine', () => ({
   awaitIdle: jest.fn(),
 }))
 jest.mock('@/lib/tokenStore', () => ({
+  clearTokens: jest.fn(),
   getTokens: jest.fn(),
+  isSignOutPending: jest.fn(),
   onTokensCleared: jest.fn(),
+  setSignOutPending: jest.fn(),
 }))
 
 const mockMemory = new Map<string, string>()
@@ -28,10 +31,16 @@ jest.mock('@/lib/secureStorage', () => ({
 }))
 
 import { clearSyncedData } from '@/lib/accountData'
-import { type AccountProfile, getMe, logout } from '@/lib/authApi'
+import { type AccountProfile, getMe, revokeSession } from '@/lib/authApi'
 import { LargeSecureStore } from '@/lib/secureStorage'
 import { awaitIdle, runSync } from '@/lib/syncEngine'
-import { getTokens, onTokensCleared } from '@/lib/tokenStore'
+import {
+  clearTokens,
+  getTokens,
+  isSignOutPending,
+  onTokensCleared,
+  setSignOutPending,
+} from '@/lib/tokenStore'
 
 import { startAuthListener, toAuthUser, useAuthStore } from './authStore'
 
@@ -56,6 +65,10 @@ beforeEach(() => {
   ;(awaitIdle as jest.Mock).mockResolvedValue(undefined)
   ;(runSync as jest.Mock).mockResolvedValue({ pushed: 0, conflicts: 0, rejected: 0, pulled: 0, errors: 0 })
   ;(clearSyncedData as jest.Mock).mockResolvedValue(undefined)
+  ;(clearTokens as jest.Mock).mockResolvedValue(undefined)
+  ;(revokeSession as jest.Mock).mockResolvedValue(undefined)
+  ;(isSignOutPending as jest.Mock).mockResolvedValue(false)
+  ;(setSignOutPending as jest.Mock).mockResolvedValue(undefined)
 })
 
 describe('toAuthUser', () => {
@@ -97,19 +110,34 @@ describe('useAuthStore persistence', () => {
 })
 
 describe('auth actions', () => {
-  it('signOut logs out on the server and clears the user', async () => {
+  it('signOut clears local tokens, revokes the session server-side, and clears the user', async () => {
+    ;(getTokens as jest.Mock).mockResolvedValue(tokens)
     useAuthStore.getState().setUser(profile)
     await useAuthStore.getState().signOut()
-    expect(logout).toHaveBeenCalled()
+    expect(clearTokens).toHaveBeenCalledWith('signout')
+    expect(revokeSession).toHaveBeenCalledWith(tokens)
     expect(useAuthStore.getState().user).toBeNull()
+  })
+
+  it('signOut skips the server revoke when there is no session to revoke', async () => {
+    ;(getTokens as jest.Mock).mockResolvedValue(null)
+    await useAuthStore.getState().signOut()
+    expect(clearTokens).toHaveBeenCalledWith('signout')
+    expect(revokeSession).not.toHaveBeenCalled()
   })
 
   // Task 17 fix round 1 (issue 1): signOut() is the ONE sign-out seam — it must be the place
   // that waits for any in-flight sync and wipes synced data, not a parallel call site.
-  it('signOut waits for any in-flight sync, then wipes synced data, in that order', async () => {
+  // Fix round 4: the LOCAL token clear comes first (before any network), and the crash marker
+  // brackets the whole destructive sequence.
+  it('signOut marks pending, clears tokens, waits for sync, wipes, then unmarks — in that order', async () => {
     const order: string[] = []
-    ;(logout as jest.Mock).mockImplementation(async () => {
-      order.push('logout')
+    ;(getTokens as jest.Mock).mockResolvedValue(tokens)
+    ;(setSignOutPending as jest.Mock).mockImplementation(async (pending: boolean) => {
+      order.push(`pending:${pending}`)
+    })
+    ;(clearTokens as jest.Mock).mockImplementation(async () => {
+      order.push('clearTokens')
     })
     ;(awaitIdle as jest.Mock).mockImplementation(async () => {
       order.push('awaitIdle')
@@ -121,27 +149,50 @@ describe('auth actions', () => {
 
     await useAuthStore.getState().signOut()
 
-    expect(order).toEqual(['logout', 'awaitIdle', 'clearSyncedData'])
+    expect(order).toEqual(['pending:true', 'clearTokens', 'awaitIdle', 'clearSyncedData', 'pending:false'])
     expect(useAuthStore.getState().user).toBeNull()
   })
 
-  // Task 17 fix round 3 (issue 1): apiClient has no request timeout, so logout()'s POST could
-  // hang forever on a stalled network. Every awaited step in signOut() needs a ceiling, not
-  // just the sync flush from round 2 — otherwise the app is stuck on the splash screen with
-  // no data leak but also no way out.
-  it('bounds a never-resolving logout() so sign-out still completes', async () => {
+  // Fix round 4: if the wipe fails, the marker must stay set so the next cold start retries it.
+  it('leaves the sign-out marker set when the wipe fails', async () => {
+    ;(clearSyncedData as jest.Mock).mockRejectedValueOnce(new Error('db locked'))
+
+    await expect(useAuthStore.getState().signOut()).rejects.toThrow('db locked')
+
+    expect(setSignOutPending).toHaveBeenCalledWith(true)
+    expect(setSignOutPending).not.toHaveBeenCalledWith(false)
+  })
+
+  it('still wipes when the token delete faults, but keeps the marker so the next launch retries', async () => {
+    ;(clearTokens as jest.Mock).mockRejectedValueOnce(new Error('keystore fault'))
+
+    await useAuthStore.getState().signOut()
+
+    expect(clearSyncedData).toHaveBeenCalled()
+    expect(useAuthStore.getState().user).toBeNull()
+    expect(setSignOutPending).not.toHaveBeenCalledWith(false)
+  })
+
+  // Task 17 fix round 3 (issue 1) / round 4: apiClient has no request timeout, so the
+  // /auth/logout POST could hang forever on a stalled network. signOut() must still complete
+  // within its bound, and the local token clear must NOT depend on that POST at all — it has
+  // already happened before the POST even starts.
+  it('bounds a never-resolving server revoke; local tokens are cleared before it is even awaited', async () => {
     jest.useFakeTimers()
     try {
-      ;(logout as jest.Mock).mockReturnValueOnce(new Promise(() => undefined)) // never settles
+      ;(getTokens as jest.Mock).mockResolvedValue(tokens)
+      ;(revokeSession as jest.Mock).mockReturnValueOnce(new Promise(() => undefined)) // never settles
       useAuthStore.getState().setUser(profile)
 
       const done = useAuthStore.getState().signOut()
-      await jest.advanceTimersByTimeAsync(5000)
-      await done
-
-      expect(awaitIdle).toHaveBeenCalled()
+      await jest.advanceTimersByTimeAsync(0)
+      // Before any timeout has elapsed: local state is already gone.
+      expect(clearTokens).toHaveBeenCalledWith('signout')
       expect(clearSyncedData).toHaveBeenCalled()
       expect(useAuthStore.getState().user).toBeNull()
+
+      await jest.advanceTimersByTimeAsync(5000)
+      await done
     } finally {
       jest.useRealTimers()
     }
@@ -190,7 +241,7 @@ describe('auth actions', () => {
     startAuthListener()
     await flush()
 
-    expect(logout).toHaveBeenCalled()
+    expect(clearTokens).toHaveBeenCalledWith('signout')
     expect(getMe).not.toHaveBeenCalled()
     expect(useAuthStore.getState().user).toBeNull()
   })
@@ -208,7 +259,7 @@ describe('auth actions', () => {
     await flush()
 
     expect(runSync).toHaveBeenCalled()
-    expect(logout).toHaveBeenCalled()
+    expect(clearTokens).toHaveBeenCalledWith('signout')
     expect(clearSyncedData).toHaveBeenCalled()
     expect(useAuthStore.getState().user).toBeNull()
   })
@@ -223,7 +274,7 @@ describe('auth actions', () => {
     startAuthListener()
     await flush()
 
-    expect(logout).toHaveBeenCalled()
+    expect(clearTokens).toHaveBeenCalledWith('signout')
     expect(clearSyncedData).toHaveBeenCalled()
     expect(useAuthStore.getState().user).toBeNull()
   })
@@ -301,7 +352,7 @@ describe('auth actions', () => {
         startAuthListener()
         await jest.advanceTimersByTimeAsync(5000)
 
-        expect(logout).toHaveBeenCalled()
+        expect(clearTokens).toHaveBeenCalledWith('signout')
         expect(clearSyncedData).toHaveBeenCalled()
         expect(useAuthStore.getState().user).toBeNull()
         expect(useAuthStore.getState().restoring).toBe(false)
@@ -343,6 +394,64 @@ describe('auth actions', () => {
 
       expect(useAuthStore.getState().hydrated).toBe(true)
       expect(useAuthStore.getState().restoring).toBe(false)
+    })
+  })
+
+  // Task 17 fix round 4: signOut() clears tokens BEFORE the wipe, so an app kill in between
+  // would otherwise leave the previous account's synced data on disk for the next (guest)
+  // launch, with no tokens to trigger another sign-out. The persisted marker makes the
+  // next cold start finish the job before anything renders.
+  describe('crash-safe sign-out (fix round 4)', () => {
+    it('finishes an interrupted sign-out on cold start even though the tokens are already gone', async () => {
+      ;(isSignOutPending as jest.Mock).mockResolvedValue(true)
+      ;(getTokens as jest.Mock).mockResolvedValue(null)
+      let resolveClear!: () => void
+      ;(clearSyncedData as jest.Mock).mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveClear = resolve
+          }),
+      )
+      useAuthStore.setState({ user: toAuthUser(profile) })
+      await useAuthStore.persist.rehydrate()
+
+      startAuthListener()
+      await flush()
+
+      expect(clearSyncedData).toHaveBeenCalled()
+      expect(useAuthStore.getState().restoring).toBe(true)
+
+      resolveClear()
+      await flush()
+
+      expect(setSignOutPending).toHaveBeenLastCalledWith(false)
+      expect(useAuthStore.getState().user).toBeNull()
+      expect(useAuthStore.getState().restoring).toBe(false)
+    })
+
+    it('finishes it even when tokens survived and "keep me signed in" is on — never silently resumes', async () => {
+      ;(isSignOutPending as jest.Mock).mockResolvedValue(true)
+      ;(getTokens as jest.Mock).mockResolvedValue(tokens)
+      await useAuthStore.persist.rehydrate()
+
+      startAuthListener()
+      await flush()
+
+      expect(getMe).not.toHaveBeenCalled()
+      expect(clearTokens).toHaveBeenCalledWith('signout')
+      expect(clearSyncedData).toHaveBeenCalled()
+      expect(useAuthStore.getState().user).toBeNull()
+      expect(useAuthStore.getState().restoring).toBe(false)
+    })
+
+    it('does not wipe on a normal cold start (no marker)', async () => {
+      ;(getTokens as jest.Mock).mockResolvedValue(null)
+      await useAuthStore.persist.rehydrate()
+
+      startAuthListener()
+      await flush()
+
+      expect(clearSyncedData).not.toHaveBeenCalled()
     })
   })
 

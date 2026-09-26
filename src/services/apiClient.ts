@@ -1,10 +1,10 @@
 import { getDeviceInfo } from '@/lib/deviceIdentity'
 import {
-  clearTokens,
+  clearTokensIfCurrent,
   getTokens,
   normalizeTokens,
   type RawTokens,
-  setTokens,
+  replaceTokensIfCurrent,
 } from '@/lib/tokenStore'
 
 export class ApiError extends Error {
@@ -128,13 +128,16 @@ function refreshTokens(): Promise<boolean> {
         { refreshToken: tokens.refreshToken, ...device },
         {},
       )
+      // This POST can settle long after a sign-out (it may belong to a sync signOut() gave up
+      // waiting on), so both outcomes only touch the session it refreshed: never resurrect a
+      // signed-out session, never overwrite or clear a newer one (Task 17 fix round 4).
       if (response.status === 400 || response.status === 401 || response.status === 422) {
-        await clearTokens('expired')
+        await clearTokensIfCurrent(tokens, 'expired')
         return false
       }
       if (!response.ok) throw await toApiError(response)
-      await setTokens(normalizeTokens(await parseBody<RawTokens>(response, false)))
-      return true
+      const next = normalizeTokens(await parseBody<RawTokens>(response, false))
+      return replaceTokensIfCurrent(tokens, next)
     })().finally(() => {
       refreshing = null
     })
@@ -189,7 +192,8 @@ async function request<T>(
     if (!fresh) throw sessionExpired()
     response = await send(fresh.accessToken)
     if (response.status === 401) {
-      await clearTokens('expired')
+      // Only the session this retry actually used — a newer one is not ours to clear.
+      await clearTokensIfCurrent(fresh, 'expired')
       throw sessionExpired()
     }
   }

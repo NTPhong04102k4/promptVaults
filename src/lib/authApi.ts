@@ -1,7 +1,7 @@
 import { apiClient } from '@/services/apiClient'
 
 import { getDeviceInfo } from './deviceIdentity'
-import { clearTokens, getTokens, normalizeTokens, type RawTokens, setTokens } from './tokenStore'
+import { normalizeTokens, type RawTokens, setTokens, type StoredTokens } from './tokenStore'
 
 // camelCase of AioKin's LoginResponse (Models/ViewModel/Auth/User/LoginResponse.cs).
 // userCode is not returned today — spec gap G2.
@@ -86,21 +86,21 @@ export async function updateMe(patch: { firstName?: string; lastName?: string })
   await apiClient.patch('/account/me', patch, { auth: true })
 }
 
-export async function logout(): Promise<void> {
-  const tokens = await getTokens()
+// Server-side revoke of ONE specific session — a pure, best-effort network call that never
+// throws and never reads or writes the token store. Local sign-out (clearing tokens) is
+// authStore.signOut()'s job and happens BEFORE this is even started, so a stalled POST can
+// neither delay it nor — when it finally settles, maybe minutes later and after a different
+// account signed in — clear anyone's tokens (Task 17 fix round 4). The bearer header is
+// passed explicitly instead of `auth: true`: by the time this runs the store is already
+// empty, and it must not trigger a refresh or the "session expired" alert either (ruling P6).
+export async function revokeSession(tokens: StoredTokens): Promise<void> {
   try {
-    if (tokens) {
-      // skipAuthRefresh: an explicit sign-out with an already-dead session must not
-      // trigger a refresh attempt or the "session expired" alert (ruling P6).
-      await apiClient.post(
-        '/auth/logout',
-        { refreshToken: tokens.refreshToken },
-        { auth: true, skipAuthRefresh: true },
-      )
-    }
+    await apiClient.post(
+      '/auth/logout',
+      { refreshToken: tokens.refreshToken },
+      { headers: { Authorization: `Bearer ${tokens.accessToken}` } },
+    )
   } catch {
-    // Best effort: offline or already-revoked sessions still sign out locally.
-  } finally {
-    await clearTokens('signout')
+    // Best effort: offline or already-revoked sessions are already signed out locally.
   }
 }
