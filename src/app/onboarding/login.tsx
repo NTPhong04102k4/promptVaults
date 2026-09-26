@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Text, View } from 'react-native'
 import { Image } from 'expo-image'
 
@@ -6,6 +6,7 @@ import googleLogo from '@/assets/images/google.svg'
 import { AuthLayout, Button, Checkbox, FooterPrompt, OrDivider, TextField } from '@/components/ui'
 import { getSession, signInWithEmail, signInWithGoogle } from '@/lib/auth'
 import { type AuthErrorField, toAuthError, validateEmail } from '@/lib/authForm'
+import { getBiometricEnrollment, signInWithBiometric } from '@/lib/biometricLogin'
 import { push, replace, useRouteParams } from '@/navigation'
 import { useAuthStore } from '@/store'
 import { makeStyles, text } from '@/theme'
@@ -21,6 +22,27 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('')
   const [errors, setErrors] = useState<Errors>({})
   const [loading, setLoading] = useState(false)
+  const [biometricReady, setBiometricReady] = useState(false)
+
+  useEffect(() => {
+    getBiometricEnrollment().then((e) => setBiometricReady(e !== null))
+  }, [])
+
+  async function handleBiometric() {
+    setErrors({})
+    setLoading(true)
+    try {
+      if ((await signInWithBiometric()) === 'signed_in') {
+        await useAuthStore.getState().refreshUser()
+        replace('sync')
+      }
+    } catch {
+      // Server answers every failure with the same InvalidCredentials by design.
+      setErrors({ form: 'Không đăng nhập được bằng sinh trắc học, hãy dùng mật khẩu.' })
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function handleLogin() {
     const next: Errors = {}
@@ -73,6 +95,15 @@ export default function LoginScreen() {
       </View>
 
       <OrDivider label="hoặc đăng nhập bằng email" />
+
+      {biometricReady && (
+        <Button
+          variant="tonal"
+          label="Đăng nhập bằng vân tay / Face ID"
+          onPress={handleBiometric}
+          disabled={loading}
+        />
+      )}
 
       <View style={styles.fields}>
         <TextField

@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, View } from 'react-native'
 import { ThemedText } from '@/components/Themed'
 import { Button } from '@/components/ui'
 import { adoptLocalPrompts, countLocalPrompts, prepareSignedInUser } from '@/lib/accountData'
+import { forgetBiometricForOtherUser } from '@/lib/biometricLogin'
 import type { Space } from '@/lib/spaces'
 import { runSync } from '@/lib/syncEngine'
 import { replace, resetTo } from '@/navigation'
@@ -18,6 +19,7 @@ export default function SyncScreen() {
   const { colors } = useTheme()
   const userId = useAuthStore((state) => state.user?.id ?? null)
   const email = useAuthStore((state) => state.user?.email ?? null)
+  const userCode = useAuthStore((state) => state.user?.userCode ?? null)
   const [phase, setPhase] = useState<Phase>('loading')
   const [localCount, setLocalCount] = useState(0)
   const [personal, setPersonal] = useState<Space | null>(null)
@@ -30,6 +32,7 @@ export default function SyncScreen() {
     }
     let active = true
     ;(async () => {
+      await forgetBiometricForOtherUser(userCode).catch(() => undefined)
       try {
         const space = await prepareSignedInUser(userId)
         const count = await countLocalPrompts()
@@ -51,7 +54,7 @@ export default function SyncScreen() {
     return () => {
       active = false
     }
-  }, [userId])
+  }, [userId, userCode])
 
   async function handleAdopt() {
     if (!personal) return
