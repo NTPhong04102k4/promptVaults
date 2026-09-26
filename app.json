@@ -40,7 +40,8 @@
         {
           "faceIDPermission": "Cho phép PromptVault dùng Face ID để mở khoá app."
         }
-      ]
+      ],
+      "expo-background-task"
     ],
     "experiments": {
       "typedRoutes": true,

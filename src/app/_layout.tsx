@@ -5,8 +5,10 @@ import { ThemeProvider as NavigationThemeProvider, SplashScreen, Stack } from 'e
 import { StatusBar } from 'expo-status-bar'
 
 import { isAppLockEnabled } from '@/lib/appLock'
+import { registerBackgroundSync } from '@/lib/backgroundSync'
 import { authenticateWithBiometric } from '@/lib/biometric'
 import { isOAuthInProgress } from '@/lib/oauthState'
+import { startSyncTriggers } from '@/lib/syncEngine'
 import { toNavigationTheme } from '@/navigation'
 import { startAuthListener, useAuthStore } from '@/store'
 import { fontAssets, type Theme, ThemeProvider, useTheme } from '@/theme'
@@ -38,6 +40,11 @@ function RootLayoutContent() {
   }
 
   useEffect(() => startAuthListener(), [])
+
+  useEffect(() => {
+    registerBackgroundSync().catch(() => undefined)
+    return startSyncTriggers()
+  }, [])
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (next) => {
