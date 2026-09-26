@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Alert, Switch, View } from 'react-native'
+import { Alert, Switch, Text, View } from 'react-native'
 import Constants from 'expo-constants'
 
-import { SettingsRow } from '@/components/ui'
+import { Icon } from '@/components/Icon'
+import { Dialog, RadioButton, SettingsRow } from '@/components/ui'
 import { isAppLockEnabled, setAppLockEnabled } from '@/lib/appLock'
 import { toAuthError } from '@/lib/authForm'
 import { authenticateWithBiometric, isBiometricAvailable } from '@/lib/biometric'
@@ -13,15 +14,23 @@ import {
 } from '@/lib/biometricLogin'
 import { push } from '@/navigation'
 import { useAuthStore } from '@/store'
-import { makeStyles, useTheme } from '@/theme'
+import { makeStyles, type ThemePreference, useTheme, useThemePreference } from '@/theme'
+
+const THEME_LABELS: Record<ThemePreference, string> = {
+  light: 'Sáng',
+  dark: 'Tối',
+  system: 'Theo hệ thống',
+}
 
 export default function SettingsScreen() {
   const { colors } = useTheme()
   const styles = useStyles()
+  const { preference, setPreference } = useThemePreference()
   const user = useAuthStore((state) => state.user)
   const [biometricAvailable, setBiometricAvailable] = useState(false)
   const [lockEnabled, setLockEnabled] = useState(false)
   const [biometricLogin, setBiometricLogin] = useState(false)
+  const [themeDialogVisible, setThemeDialogVisible] = useState(false)
 
   useEffect(() => {
     isBiometricAvailable().then(setBiometricAvailable)
@@ -61,8 +70,30 @@ export default function SettingsScreen() {
       <SettingsRow
         icon="settings"
         label="Giao diện sáng / tối"
-        onPress={() => Alert.alert('Giao diện sáng / tối', 'Hiện đang theo giao diện hệ thống.')}
+        onPress={() => setThemeDialogVisible(true)}
+        trailing={
+          <>
+            <Text style={styles.themeValue}>{THEME_LABELS[preference]}</Text>
+            <Icon name="chevronRight" size={20} color={colors.onSurfaceVariant} />
+          </>
+        }
       />
+      <Dialog visible={themeDialogVisible} onDismiss={() => setThemeDialogVisible(false)}>
+        <Dialog.Title>Giao diện sáng / tối</Dialog.Title>
+        <Dialog.Content>
+          <RadioButton.Group
+            value={preference}
+            onValueChange={(value) => {
+              setPreference(value as ThemePreference)
+              setThemeDialogVisible(false)
+            }}
+          >
+            <RadioButton.Item label="Sáng" value="light" />
+            <RadioButton.Item label="Tối" value="dark" />
+            <RadioButton.Item label="Theo hệ thống" value="system" />
+          </RadioButton.Group>
+        </Dialog.Content>
+      </Dialog>
       {(biometricAvailable || lockEnabled) && (
         <SettingsRow
           icon="lock"
@@ -105,6 +136,7 @@ export default function SettingsScreen() {
   )
 }
 
-const useStyles = makeStyles(({ colors, spacing }) => ({
+const useStyles = makeStyles(({ colors, spacing, typography }) => ({
   container: { flex: 1, gap: spacing.md, padding: spacing.lg, backgroundColor: colors.surface },
+  themeValue: { ...typography.bodyMedium, color: colors.onSurfaceVariant },
 }))
