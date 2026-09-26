@@ -18,6 +18,7 @@ import { useSpaceStore } from '@/store/spaceStore'
 
 import { adoptLocalPrompts, clearSyncedData, countLocalPrompts, prepareSignedInUser } from './accountData'
 import { getDb, LOCAL_SPACE_ID } from './db'
+import { isSignOutPending, setSignOutPending } from './tokenStore'
 
 const PERSONAL = 'aaaaaaaa-0000-4000-8000-000000000001'
 
@@ -51,6 +52,25 @@ describe('prepareSignedInUser', () => {
 
     expect(await db.getFirstAsync("SELECT id FROM prompts WHERE id = 'theirs'")).toBeNull()
     expect(useSpaceStore.getState().ownerUserId).toBe('user-2')
+  })
+
+  // Task 17 fix round 5: a sign-out-pending marker left behind by a faulted sign-out must not
+  // make the NEXT cold start sign out (and wipe) whoever legitimately signed in afterwards.
+  it('clears a stale sign-out-pending marker once a user has signed in', async () => {
+    await setSignOutPending(true)
+
+    await prepareSignedInUser('user-2')
+
+    expect(await isSignOutPending()).toBe(false)
+  })
+
+  it('clears the stale marker even when the spaces fetch fails (offline sign-in)', async () => {
+    await setSignOutPending(true)
+    ;(apiClient.get as jest.Mock).mockRejectedValueOnce(new Error('offline'))
+
+    await expect(prepareSignedInUser('user-2')).rejects.toThrow('offline')
+
+    expect(await isSignOutPending()).toBe(false)
   })
 })
 

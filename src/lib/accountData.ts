@@ -3,6 +3,7 @@ import { useSpaceStore } from '@/store/spaceStore'
 import { getDb, LOCAL_SPACE_ID } from './db'
 import { enqueue, pendingCount } from './outbox'
 import { fetchAndStoreMySpaces, type Space, wipeSyncedSpaces } from './spaces'
+import { setSignOutPending } from './tokenStore'
 
 export async function prepareSignedInUser(userId: string): Promise<Space | null> {
   const { ownerUserId } = useSpaceStore.getState()
@@ -11,6 +12,11 @@ export async function prepareSignedInUser(userId: string): Promise<Space | null>
     useSpaceStore.getState().reset()
   }
   useSpaceStore.getState().setOwner(userId)
+  // A sign-out-pending marker left by a faulted earlier sign-out (Task 17 fix round 4) must not
+  // fire against THIS legitimate sign-in on the next cold start. Safe to drop here: the owner
+  // check above has already wiped any other account's leftover data (fix round 5). Done before
+  // the network fetch below so an offline sign-in clears it too.
+  await setSignOutPending(false)
 
   const spaces = await fetchAndStoreMySpaces()
   const personal = spaces.find((s) => s.kind === 'personal') ?? null
