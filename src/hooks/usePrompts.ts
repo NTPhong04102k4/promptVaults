@@ -81,26 +81,42 @@ export function usePrompts({ favoritesOnly = false }: Options = {}) {
     promptsRef.current = prompts
   }, [prompts])
 
+  // Ids currently mid-toggle. Guards against a rapid double-tap on the same
+  // prompt: without it, a second call while the first setFavorite() write is
+  // still in flight would read promptsRef.current *after* the first call's
+  // optimistic flip, compute the opposite nextIsFavorite, and fire a second
+  // concurrent write — and if the two writes settle out of order, the final
+  // UI/DB state depends on which one happened to finish last, not which tap
+  // was actually last. A double-tap on a favorite icon is debounced (ignored),
+  // not queued — it's UX noise, not two distinct intents.
+  const inFlightToggleIdsRef = useRef<Set<string>>(new Set())
+
   // Reads the current favorite state from the ref *before* calling setPrompts:
   // the updater function passed to setPrompts isn't guaranteed to run synchronously,
   // so computing nextIsFavorite from inside it (and reading it back right after)
   // isn't reliable — it could still be unset by the time setFavorite() is called.
   const toggleFavorite = useCallback(async (id: string) => {
-    const prompt = promptsRef.current.find((p) => p.id === id)
-    if (!prompt) return
-    const nextIsFavorite = !prompt.isFavorite
-    // Optimistic local update: flip just this row, no full reload.
-    setPrompts((current) =>
-      current.map((p) => (p.id === id ? { ...p, isFavorite: nextIsFavorite } : p)),
-    )
+    if (inFlightToggleIdsRef.current.has(id)) return
+    inFlightToggleIdsRef.current.add(id)
     try {
-      await setFavorite(id, nextIsFavorite)
-    } catch (error) {
-      // Revert the optimistic flip if the write failed.
+      const prompt = promptsRef.current.find((p) => p.id === id)
+      if (!prompt) return
+      const nextIsFavorite = !prompt.isFavorite
+      // Optimistic local update: flip just this row, no full reload.
       setPrompts((current) =>
-        current.map((p) => (p.id === id ? { ...p, isFavorite: !nextIsFavorite } : p)),
+        current.map((p) => (p.id === id ? { ...p, isFavorite: nextIsFavorite } : p)),
       )
-      throw error
+      try {
+        await setFavorite(id, nextIsFavorite)
+      } catch (error) {
+        // Revert the optimistic flip if the write failed.
+        setPrompts((current) =>
+          current.map((p) => (p.id === id ? { ...p, isFavorite: !nextIsFavorite } : p)),
+        )
+        throw error
+      }
+    } finally {
+      inFlightToggleIdsRef.current.delete(id)
     }
   }, [])
 

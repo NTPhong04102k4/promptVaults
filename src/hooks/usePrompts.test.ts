@@ -185,6 +185,40 @@ describe('usePrompts optimistic favorite toggle', () => {
     expect(listPromptsMock).toHaveBeenCalledTimes(1) // still no reload after settling
   })
 
+  it('ignores a second toggle on the same prompt while the first write is still in flight', async () => {
+    const prompt = makePrompt({ id: 'p1', isFavorite: false })
+    listPromptsMock.mockResolvedValueOnce([prompt])
+    let resolveSetFavorite!: () => void
+    setFavoriteMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { resolveSetFavorite = resolve }),
+    )
+
+    const { getHook } = renderUsePrompts()
+    await act(async () => {}) // flush the initial reload
+
+    let firstToggle!: Promise<void>
+    let secondToggle!: Promise<void>
+    act(() => {
+      firstToggle = getHook().toggleFavorite('p1')
+      secondToggle = getHook().toggleFavorite('p1')
+    })
+
+    // The second (rapid double-tap) call must not fire its own write while
+    // the first is still pending.
+    expect(setFavoriteMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveSetFavorite()
+      await firstToggle
+      await secondToggle
+    })
+
+    // Still only one write ever happened, and the final state reflects it
+    // cleanly (no revert from a phantom second call).
+    expect(setFavoriteMock).toHaveBeenCalledTimes(1)
+    expect(getHook().prompts[0]!.isFavorite).toBe(true)
+  })
+
   it('reverts the optimistic flip if the write fails', async () => {
     const prompt = makePrompt({ id: 'p1', isFavorite: false })
     listPromptsMock.mockResolvedValueOnce([prompt])
