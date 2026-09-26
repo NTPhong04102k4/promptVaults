@@ -2,15 +2,16 @@ import { useCallback, useState } from 'react'
 import * as Clipboard from 'expo-clipboard'
 import { useFocusEffect } from 'expo-router'
 
-import { LOCAL_SPACE_ID } from '@/lib/db'
 import { listPrompts, type Prompt, recordCopy, setFavorite } from '@/lib/prompts'
+import { useSpaceStore } from '@/store'
 
 type Options = { favoritesOnly?: boolean }
 
 // Shared list state for Home / Search / Favorites: category + text filter over
 // the local SQLite prompts table, reloaded whenever the screen regains focus
-// (e.g. after creating/editing a prompt in the sheet).
+// (e.g. after creating/editing a prompt in the sheet) or the current space changes.
 export function usePrompts({ favoritesOnly = false }: Options = {}) {
+  const spaceId = useSpaceStore((state) => state.currentSpaceId)
   const [category, setCategory] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [prompts, setPrompts] = useState<Prompt[]>([])
@@ -19,11 +20,11 @@ export function usePrompts({ favoritesOnly = false }: Options = {}) {
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      setPrompts(await listPrompts(LOCAL_SPACE_ID, { category, query, favoritesOnly }))
+      setPrompts(await listPrompts(spaceId, { category, query, favoritesOnly }))
     } finally {
       setLoading(false)
     }
-  }, [category, query, favoritesOnly])
+  }, [spaceId, category, query, favoritesOnly])
 
   useFocusEffect(
     useCallback(() => {

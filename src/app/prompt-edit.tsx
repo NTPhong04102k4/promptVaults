@@ -3,9 +3,9 @@ import { ScrollView, Text, TextInput, View } from 'react-native'
 
 import { Icon } from '@/components/Icon'
 import { Button, FilterChip, IconButton, TextField } from '@/components/ui'
-import { LOCAL_SPACE_ID } from '@/lib/db'
 import { createPrompt, getPrompt, PROMPT_CATEGORIES, updatePrompt } from '@/lib/prompts'
 import { goBack, useRouteParams } from '@/navigation'
+import { useSpaceStore } from '@/store'
 import { makeStyles, text, useTheme } from '@/theme'
 
 export default function PromptEditScreen() {
@@ -37,7 +37,7 @@ export default function PromptEditScreen() {
         await updatePrompt(id, { title: title.trim(), content: content.trim(), category })
       } else {
         await createPrompt({
-          spaceId: LOCAL_SPACE_ID,
+          spaceId: useSpaceStore.getState().currentSpaceId,
           title: title.trim(),
           content: content.trim(),
           category,
