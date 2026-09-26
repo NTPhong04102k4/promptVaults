@@ -11,6 +11,7 @@ export const ROUTES = {
   // (drawer)
   settings: '/settings',
   // root stack — modal/formSheet screens presented over the drawer
+  welcome: '/onboarding/welcome',
   promptDetail: '/prompt-detail',
   promptEdit: '/prompt-edit',
   vaultSwitcher: '/vault-switcher',
@@ -20,6 +21,7 @@ export const ROUTES = {
   forgotPassword: '/onboarding/forgot-password',
   sync: '/onboarding/sync',
   sessions: '/sessions',
+  conflict: '/conflict',
 } as const
 
 export type RouteName = keyof typeof ROUTES
@@ -42,4 +44,5 @@ export type RouteParams = {
   forgotPassword: { email?: string }
   sync: undefined
   sessions: undefined
+  conflict: { promptId: string }
 }

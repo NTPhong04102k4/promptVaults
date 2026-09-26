@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Alert, ScrollView, Text, View } from 'react-native'
+import { Alert, Pressable, ScrollView, Text, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useFocusEffect } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -78,6 +78,12 @@ export default function PromptDetailScreen() {
         </View>
       </View>
 
+      {prompt.hasConflict && (
+        <Pressable style={styles.conflictBanner} onPress={() => push('conflict', { promptId: prompt.id })}>
+          <Text style={styles.conflictText}>Prompt này có xung đột đồng bộ — Giải quyết</Text>
+        </Pressable>
+      )}
+
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.card}>
           <Text style={styles.title}>{prompt.title}</Text>
@@ -121,6 +127,13 @@ const useStyles = makeStyles(({ colors, shape, spacing }) => ({
   },
   topTitle: { flex: 1, ...text('headlineSmall'), color: colors.onSurface },
   actions: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
+  conflictBanner: {
+    marginHorizontal: spacing.lg,
+    padding: spacing.md,
+    borderRadius: shape.medium,
+    backgroundColor: colors.errorContainer,
+  },
+  conflictText: { ...text('bodyMedium', 'semiBold'), color: colors.onErrorContainer },
   content: { padding: spacing.lg },
   card: {
     gap: spacing.md,

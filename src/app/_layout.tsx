@@ -125,6 +125,7 @@ function RootLayoutContent() {
           name="sessions"
           options={{ headerShown: true, title: 'Thiết bị đăng nhập' }}
         />
+        <Stack.Screen name="conflict" options={{ presentation: 'modal' }} />
       </Stack>
     </NavigationThemeProvider>
   )
