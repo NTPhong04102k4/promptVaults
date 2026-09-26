@@ -1,30 +1,60 @@
-import { View, Text, Pressable, StyleSheet } from 'react-native';
-import { router } from 'expo-router';
+import { Text, View } from 'react-native'
+import { Image } from 'expo-image'
+import { SafeAreaView } from 'react-native-safe-area-context'
+
+import logoGlow from '@/assets/images/logo-glow.png'
+import { Button, FooterPrompt } from '@/components/ui'
+import { goBack, push } from '@/navigation'
+import { makeStyles, text } from '@/theme'
 
 export default function WelcomeScreen() {
+  const styles = useStyles()
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>PromptVault</Text>
-      <Text style={styles.subtitle}>
-        Lưu trữ gọn gàng – Tìm kiếm thần tốc – Copy 1 chạm cho content creator.
-      </Text>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+      <View style={styles.content}>
+        <Image source={logoGlow} style={styles.logo} contentFit="contain" />
 
-      <Pressable style={styles.primaryButton} onPress={() => router.push('/onboarding/auth?mode=signup')}>
-        <Text style={styles.primaryButtonText}>Đăng ký / Đăng nhập để đồng bộ</Text>
-      </Pressable>
+        <View style={styles.textGroup}>
+          <Text accessibilityRole="header" style={styles.title}>
+            PromptVault
+          </Text>
+          <Text style={styles.subtitle}>
+            Lưu trữ gọn gàng, tìm kiếm thần tốc, copy 1 chạm cho mọi prompt của bạn.
+          </Text>
+        </View>
 
-      <Pressable onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}>
-        <Text style={styles.secondaryText}>Dùng ngay, không cần tài khoản</Text>
-      </Pressable>
-    </View>
-  );
+        <View style={styles.actions}>
+          <Button label="Đăng ký" onPress={() => push('signup')} />
+          <FooterPrompt prompt="Đã có tài khoản?" action="Đăng nhập" onPress={() => push('login')} />
+        </View>
+
+        <Text
+          accessibilityRole="link"
+          suppressHighlighting
+          style={styles.skip}
+          onPress={() => goBack('home')}
+        >
+          Dùng ngay, không cần tài khoản
+        </Text>
+      </View>
+    </SafeAreaView>
+  )
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 16 },
-  title: { fontSize: 32, fontWeight: '700', textAlign: 'center' },
-  subtitle: { fontSize: 16, textAlign: 'center', color: '#555' },
-  primaryButton: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14, alignItems: 'center' },
-  primaryButtonText: { color: '#fff', fontWeight: '600' },
-  secondaryText: { color: '#208AEF', textAlign: 'center', marginTop: 8 },
-});
+const useStyles = makeStyles(({ colors, typography, spacing }) => ({
+  safe: { flex: 1, backgroundColor: colors.surface },
+  content: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.xxl,
+    gap: spacing.xxl,
+  },
+  logo: { width: 160, height: 160, alignSelf: 'center' },
+  textGroup: { alignItems: 'center', gap: spacing.sm },
+  title: { ...text('headlineLarge', 'bold'), color: colors.onSurface, textAlign: 'center' },
+  subtitle: { ...typography.bodyMedium, color: colors.onSurfaceVariant, textAlign: 'center' },
+  actions: { gap: spacing.lg },
+  skip: { ...text('bodyMedium', 'semiBold'), color: colors.primary, textAlign: 'center' },
+}))

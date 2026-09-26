@@ -1,38 +1,103 @@
-import { useEffect, useRef, useState } from 'react';
-import { AppState, AppStateStatus, View, Text, Pressable, StyleSheet } from 'react-native';
-import { Stack } from 'expo-router';
-import { isAppLockEnabled } from '@/lib/appLock';
-import { authenticateWithBiometric } from '@/lib/biometric';
-import { isOAuthInProgress } from '@/lib/oauthState';
+import { useEffect, useRef, useState } from 'react'
+import {
+  Alert,
+  AppState,
+  type AppStateStatus,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native'
+import { useFonts } from 'expo-font'
+import { ThemeProvider as NavigationThemeProvider, SplashScreen, Stack } from 'expo-router'
+import { StatusBar } from 'expo-status-bar'
+
+import { isAppLockEnabled } from '@/lib/appLock'
+import { registerBackgroundSync } from '@/lib/backgroundSync'
+import { authenticateWithBiometric } from '@/lib/biometric'
+import { isOAuthInProgress } from '@/lib/oauthState'
+import { startSyncTriggers } from '@/lib/syncEngine'
+import { onTokensCleared } from '@/lib/tokenStore'
+import { toNavigationTheme } from '@/navigation'
+import { startAuthListener, useAuthStore } from '@/store'
+import { fontAssets, type Theme, ThemeProvider, useTheme } from '@/theme'
+
+SplashScreen.preventAutoHideAsync()
 
 export default function RootLayout() {
-  const [checked, setChecked] = useState(false);
-  const [locked, setLocked] = useState(false);
-  const appState = useRef<AppStateStatus>(AppState.currentState);
+  return (
+    <ThemeProvider>
+      <RootLayoutContent />
+    </ThemeProvider>
+  )
+}
 
-  async function checkLock() {
-    const enabled = await isAppLockEnabled();
-    setLocked(enabled);
-    setChecked(true);
+// Reads `useTheme()`, so it must render inside `<ThemeProvider>` rather than alongside it.
+function RootLayoutContent() {
+  const theme = useTheme()
+  const [fontsLoaded, fontError] = useFonts(fontAssets)
+  const hydrated = useAuthStore((state) => state.hydrated)
+  const restoring = useAuthStore((state) => state.restoring)
+  const [checked, setChecked] = useState(false)
+  const [locked, setLocked] = useState(false)
+  const appState = useRef<AppStateStatus>(AppState.currentState)
+
+  function checkLock() {
+    isAppLockEnabled().then((enabled) => {
+      setLocked(enabled)
+      setChecked(true)
+    })
   }
+
+  useEffect(() => startAuthListener(), [])
+
+  useEffect(
+    () =>
+      onTokensCleared((reason) => {
+        if (reason === 'expired') {
+          Alert.alert('Phiên đăng nhập đã hết hạn', 'Vui lòng đăng nhập lại để tiếp tục đồng bộ.')
+        }
+      }),
+    [],
+  )
 
   useEffect(() => {
-    checkLock();
+    registerBackgroundSync().catch(() => undefined)
+    return startSyncTriggers()
+  }, [])
+
+  useEffect(() => {
     const subscription = AppState.addEventListener('change', (next) => {
-      if (appState.current.match(/inactive|background/) && next === 'active' && !isOAuthInProgress()) {
-        checkLock();
+      if (
+        appState.current.match(/inactive|background/) &&
+        next === 'active' &&
+        !isOAuthInProgress()
+      ) {
+        checkLock()
       }
-      appState.current = next;
-    });
-    return () => subscription.remove();
-  }, []);
+      appState.current = next
+    })
+    checkLock()
+    return () => subscription.remove()
+  }, [])
+
+  // A font load failure falls back to the system font rather than blocking the app.
+  // `restoring` only stays true through a cold-start sign-out (Task 17 fix round 2, issue 1) —
+  // it never delays the normal "stay signed in" launch.
+  const ready = (fontsLoaded || fontError !== null) && hydrated && checked && !restoring
+
+  useEffect(() => {
+    if (ready) SplashScreen.hideAsync()
+  }, [ready])
 
   async function handleUnlock() {
-    const success = await authenticateWithBiometric();
-    if (success) setLocked(false);
+    const success = await authenticateWithBiometric()
+    if (success) setLocked(false)
   }
 
-  if (!checked) return null;
+  if (!ready) return null
+
+  const styles = createStyles(theme)
 
   if (locked) {
     return (
@@ -42,15 +107,76 @@ export default function RootLayout() {
           <Text style={styles.buttonText}>Mở khoá</Text>
         </Pressable>
       </View>
-    );
+    )
   }
 
-  return <Stack />;
+  return (
+    <NavigationThemeProvider value={toNavigationTheme(theme)}>
+      <StatusBar style={theme.dark ? 'light' : 'dark'} />
+      <Stack screenOptions={{ headerTitleStyle: theme.typography.titleLarge, headerShown: false }}>
+        <Stack.Screen name="(drawers)" options={{ headerShown: false }} />
+        <Stack.Screen name="prompt-detail" options={{ presentation: 'modal' }} />
+        <Stack.Screen
+          name="prompt-edit"
+          options={{
+            presentation: 'formSheet',
+            sheetAllowedDetents: 'fitToContents',
+            sheetGrabberVisible: true,
+            sheetCornerRadius: theme.shape.extraLarge,
+          }}
+        />
+        <Stack.Screen
+          name="vault-switcher"
+          options={{
+            presentation: 'formSheet',
+            sheetAllowedDetents: 'fitToContents',
+            sheetGrabberVisible: true,
+            sheetCornerRadius: theme.shape.extraLarge,
+          }}
+        />
+        <Stack.Screen
+          name="profile-edit"
+          options={{
+            presentation: 'formSheet',
+            sheetAllowedDetents: 'fitToContents',
+            sheetGrabberVisible: true,
+            sheetCornerRadius: theme.shape.extraLarge,
+          }}
+        />
+        <Stack.Screen name="oauth-webview" options={{ presentation: 'modal', headerShown: false }} />
+        <Stack.Screen name="onboarding/welcome" options={{ headerShown: false }} />
+        <Stack.Screen name="onboarding/signup" />
+        <Stack.Screen name="onboarding/login" />
+        <Stack.Screen name="onboarding/verify-email" />
+        <Stack.Screen name="onboarding/forgot-password" />
+        <Stack.Screen name="onboarding/reset-password" />
+        <Stack.Screen name="onboarding/sync" options={{ headerShown: true, title: 'Đồng bộ' }} />
+        <Stack.Screen
+          name="sessions"
+          options={{ headerShown: true, title: 'Thiết bị đăng nhập' }}
+        />
+        <Stack.Screen name="conflict" options={{ presentation: 'modal' }} />
+      </Stack>
+    </NavigationThemeProvider>
+  )
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
-  title: { fontSize: 20, fontWeight: '600' },
-  button: { backgroundColor: '#208AEF', borderRadius: 8, padding: 14 },
-  buttonText: { color: '#fff', fontWeight: '600' },
-});
+function createStyles({ colors, typography, shape, spacing }: Theme) {
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: spacing.lg,
+      backgroundColor: colors.surface,
+    },
+    title: { ...typography.titleLarge, color: colors.onSurface },
+    button: {
+      backgroundColor: colors.primary,
+      borderRadius: shape.full,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.xl,
+    },
+    buttonText: { ...typography.labelLarge, color: colors.onPrimary },
+  })
+}

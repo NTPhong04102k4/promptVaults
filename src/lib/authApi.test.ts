@@ -1,0 +1,166 @@
+jest.mock('./deviceIdentity', () => ({
+  getDeviceInfo: async () => ({ deviceId: 'dev-1', deviceName: 'Pixel', platform: 'android' }),
+}))
+
+import * as SecureStore from 'expo-secure-store'
+
+import { login, register, resetPassword, revokeSession, verifyOtp, verifyPasswordOtp } from './authApi'
+import { getTokens, onTokensCleared, resetTokenCacheForTests, setTokens } from './tokenStore'
+
+// expo-secure-store is auto-mocked from __mocks__/expo-secure-store.js (see ruling P16);
+// its backing Map is exposed as __store so we can seed/inspect it directly.
+const mockSecure = (SecureStore as unknown as { __store: Map<string, string> }).__store
+
+const profile = {
+  userID: 'u-1',
+  firstName: null,
+  lastName: null,
+  fullName: null,
+  email: 'a@b.com',
+  username: 'annguyen',
+  image: null,
+  socialProvider: null,
+  hasPassword: true,
+}
+
+function mockFetchOnce(status: number, body: unknown) {
+  const fn = jest.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: String(status),
+    text: async () => JSON.stringify(body),
+    json: async () => body,
+  })
+  globalThis.fetch = fn as unknown as typeof fetch
+  return fn
+}
+
+function sentBody(fn: jest.Mock): unknown {
+  return JSON.parse((fn.mock.calls[0]![1] as RequestInit).body as string)
+}
+
+const originalFetch = globalThis.fetch
+beforeEach(() => {
+  mockSecure.clear()
+  resetTokenCacheForTests()
+})
+afterEach(() => {
+  globalThis.fetch = originalFetch
+})
+
+describe('authApi', () => {
+  it('register posts username/email/password only', async () => {
+    const fn = mockFetchOnce(200, { success: true, message: 'ok' })
+    await register({ username: 'annguyen', email: 'a@b.com', password: 'secret1' })
+    expect(fn.mock.calls[0]![0]).toMatch(/\/auth\/register$/)
+    expect(sentBody(fn)).toEqual({ username: 'annguyen', email: 'a@b.com', password: 'secret1' })
+  })
+
+  it('verifyOtp sends device info, stores tokens and returns the user', async () => {
+    const fn = mockFetchOnce(201, {
+      success: true,
+      data: { accessToken: 'a', refreshToken: 'r', expiresIn: 900, tokenType: 'Bearer', user: profile },
+    })
+
+    const user = await verifyOtp('a@b.com', '123456')
+
+    expect(sentBody(fn)).toEqual({
+      email: 'a@b.com',
+      otpCode: '123456',
+      deviceId: 'dev-1',
+      deviceName: 'Pixel',
+      platform: 'android',
+    })
+    expect(user.username).toBe('annguyen')
+    expect((await getTokens())?.accessToken).toBe('a')
+  })
+
+  it('login reads the raw snake_case TokenResponse', async () => {
+    const fn = mockFetchOnce(200, {
+      access_token: 'a',
+      refresh_token: 'r',
+      expires_in: 900,
+      token_type: 'Bearer',
+      scope: 'Customer',
+    })
+
+    await login('annguyen', 'secret1')
+
+    expect(sentBody(fn)).toEqual({
+      usernameOrPhoneOrEmail: 'annguyen',
+      password: 'secret1',
+      deviceId: 'dev-1',
+      deviceName: 'Pixel',
+      platform: 'android',
+    })
+    expect((await getTokens())?.refreshToken).toBe('r')
+  })
+
+  it('login surfaces InvalidCredentials as an ApiError code', async () => {
+    mockFetchOnce(401, { success: false, errorCode: 'InvalidCredentials', message: 'x' })
+    await expect(login('a@b.com', 'wrong1')).rejects.toMatchObject({ code: 'InvalidCredentials' })
+  })
+
+  it('verifyPasswordOtp returns the temporary password lifetime', async () => {
+    mockFetchOnce(200, { success: true, data: { step: 'temp_password_sent', expiresInMinutes: 3 } })
+    await expect(verifyPasswordOtp('a@b.com', '123456')).resolves.toEqual({
+      step: 'temp_password_sent',
+      expiresInMinutes: 3,
+    })
+  })
+
+  it('resetPassword sends email, temporaryPassword, newPassword', async () => {
+    const fn = mockFetchOnce(200, { success: true })
+    await resetPassword('a@b.com', 'Ab12Cd34', 'newpass1')
+    expect(sentBody(fn)).toEqual({
+      email: 'a@b.com',
+      temporaryPassword: 'Ab12Cd34',
+      newPassword: 'newpass1',
+    })
+  })
+
+  // Task 17 fix round 4: the server-side revoke is a pure network call. It is handed the exact
+  // session to revoke and never reads or writes the token store — local sign-out is
+  // authStore.signOut()'s job, done promptly and independently of this (possibly stalled) POST.
+  const sessionA = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 600_000 }
+
+  it('revokeSession posts the given refresh token with the given access token as bearer', async () => {
+    const fn = mockFetchOnce(200, { success: true })
+
+    await revokeSession(sessionA)
+
+    expect(fn.mock.calls[0]![0]).toMatch(/\/auth\/logout$/)
+    expect(sentBody(fn)).toEqual({ refreshToken: 'r' })
+    expect(((fn.mock.calls[0]![1] as RequestInit).headers as Record<string, string>).Authorization).toBe(
+      'Bearer a',
+    )
+  })
+
+  it('revokeSession works with no tokens stored at all (local sign-out already happened)', async () => {
+    const fn = mockFetchOnce(200, { success: true })
+
+    await revokeSession(sessionA)
+
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('revokeSession never throws when offline', async () => {
+    globalThis.fetch = jest.fn().mockRejectedValue(new TypeError('offline')) as unknown as typeof fetch
+    await expect(revokeSession(sessionA)).resolves.toBeUndefined()
+  })
+
+  it('revokeSession never refreshes, clears, or fires a token event — even on a 401 or with an expired token', async () => {
+    const newer = { accessToken: 'b', refreshToken: 'b-r', expiresAt: Date.now() + 600_000 }
+    await setTokens(newer)
+    const listener = jest.fn()
+    const stop = onTokensCleared(listener)
+    const fn = mockFetchOnce(401, { success: false, errorCode: 'Unauthorized', message: 'x' })
+
+    await revokeSession({ ...sessionA, expiresAt: Date.now() - 1 })
+
+    expect(fn.mock.calls.filter(([u]) => (u as string).endsWith('/auth/refresh-token'))).toHaveLength(0)
+    expect(listener).not.toHaveBeenCalled()
+    expect(await getTokens()).toEqual(newer)
+    stop()
+  })
+})
