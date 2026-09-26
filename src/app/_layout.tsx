@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { AppState, type AppStateStatus, Pressable, StyleSheet, Text, View } from 'react-native'
+import {
+  Alert,
+  AppState,
+  type AppStateStatus,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native'
 import { useFonts } from 'expo-font'
 import { ThemeProvider as NavigationThemeProvider, SplashScreen, Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
@@ -9,6 +17,7 @@ import { registerBackgroundSync } from '@/lib/backgroundSync'
 import { authenticateWithBiometric } from '@/lib/biometric'
 import { isOAuthInProgress } from '@/lib/oauthState'
 import { startSyncTriggers } from '@/lib/syncEngine'
+import { onTokensCleared } from '@/lib/tokenStore'
 import { toNavigationTheme } from '@/navigation'
 import { startAuthListener, useAuthStore } from '@/store'
 import { fontAssets, type Theme, ThemeProvider, useTheme } from '@/theme'
@@ -41,6 +50,16 @@ function RootLayoutContent() {
   }
 
   useEffect(() => startAuthListener(), [])
+
+  useEffect(
+    () =>
+      onTokensCleared((reason) => {
+        if (reason === 'expired') {
+          Alert.alert('Phiên đăng nhập đã hết hạn', 'Vui lòng đăng nhập lại để tiếp tục đồng bộ.')
+        }
+      }),
+    [],
+  )
 
   useEffect(() => {
     registerBackgroundSync().catch(() => undefined)
@@ -120,6 +139,7 @@ function RootLayoutContent() {
         <Stack.Screen name="onboarding/login" />
         <Stack.Screen name="onboarding/verify-email" />
         <Stack.Screen name="onboarding/forgot-password" />
+        <Stack.Screen name="onboarding/reset-password" />
         <Stack.Screen name="onboarding/sync" options={{ headerShown: true, title: 'Đồng bộ' }} />
         <Stack.Screen
           name="sessions"

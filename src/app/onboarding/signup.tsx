@@ -1,13 +1,10 @@
 import { useState } from 'react'
 import { Text, View } from 'react-native'
-import { Image } from 'expo-image'
 
-import googleLogo from '@/assets/images/google.svg'
-import { AuthLayout, Button, Checkbox, FooterPrompt, OrDivider, TextField } from '@/components/ui'
-import { getSession, signInWithGoogle, signUpWithEmail } from '@/lib/auth'
+import { AuthLayout, Button, Checkbox, FooterPrompt, TextField } from '@/components/ui'
+import { register } from '@/lib/authApi'
 import {
   type AuthErrorField,
-  splitFullName,
   toAuthError,
   validateEmail,
   validatePassword,
@@ -51,14 +48,9 @@ export default function SignupScreen() {
 
     setLoading(true)
     try {
-      const { needsVerification } = await signUpWithEmail({
-        email: email.trim(),
-        password,
-        username,
-        ...splitFullName(fullName),
-      })
-      if (needsVerification) replace('verifyEmail', { email: email.trim() })
-      else replace('sync')
+      // AioKin RegisterRequest has no name fields — the name is saved after OTP verification.
+      await register({ username, email: email.trim(), password })
+      replace('verifyEmail', { email: email.trim(), fullName: fullName.trim() })
     } catch (e) {
       const { field, message } = toAuthError(e)
       setErrors({ [field]: message })
@@ -67,31 +59,8 @@ export default function SignupScreen() {
     }
   }
 
-  async function handleGoogle() {
-    setErrors({})
-    setLoading(true)
-    try {
-      await signInWithGoogle()
-      if (await getSession()) replace('sync')
-    } catch (e) {
-      setErrors({ form: toAuthError(e).message })
-    } finally {
-      setLoading(false)
-    }
-  }
-
   return (
     <AuthLayout title="Đăng ký">
-      <Button
-        variant="tonal"
-        label="Đăng ký với Google"
-        icon={<Image source={googleLogo} style={styles.googleLogo} />}
-        onPress={handleGoogle}
-        disabled={loading}
-      />
-
-      <OrDivider label="hoặc đăng ký bằng email" />
-
       <View style={styles.fields}>
         <TextField
           label="Họ và tên"
@@ -173,7 +142,6 @@ export default function SignupScreen() {
 }
 
 const useStyles = makeStyles(({ colors, typography, spacing }) => ({
-  googleLogo: { width: 20, height: 20 },
   fields: { gap: spacing.lg },
   terms: { gap: spacing.xs },
   termsText: { ...typography.bodySmall, color: colors.onSurfaceVariant },

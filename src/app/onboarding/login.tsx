@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Text, View } from 'react-native'
-import { Image } from 'expo-image'
 
-import googleLogo from '@/assets/images/google.svg'
-import { AuthLayout, Button, Checkbox, FooterPrompt, OrDivider, TextField } from '@/components/ui'
-import { getSession, signInWithEmail, signInWithGoogle } from '@/lib/auth'
-import { type AuthErrorField, toAuthError, validateEmail } from '@/lib/authForm'
+import { AuthLayout, Button, Checkbox, FooterPrompt, TextField } from '@/components/ui'
+import { login } from '@/lib/authApi'
+import { type AuthErrorField, toAuthError } from '@/lib/authForm'
 import { getBiometricEnrollment, signInWithBiometric } from '@/lib/biometricLogin'
 import { push, replace, useRouteParams } from '@/navigation'
 import { useAuthStore } from '@/store'
@@ -46,37 +44,19 @@ export default function LoginScreen() {
 
   async function handleLogin() {
     const next: Errors = {}
-    const emailError = validateEmail(email)
-    if (emailError) next.email = emailError
+    if (!email.trim()) next.email = 'Vui lòng nhập email hoặc username.'
     if (!password) next.password = 'Vui lòng nhập mật khẩu.'
     setErrors(next)
     if (Object.keys(next).length > 0) return
 
     setLoading(true)
     try {
-      await signInWithEmail({ email: email.trim(), password })
+      await login(email.trim(), password)
+      await useAuthStore.getState().refreshUser()
       replace('sync')
     } catch (e) {
       const { field, message } = toAuthError(e)
-      // Signed up but never entered the code — send them to finish verification.
-      if (e instanceof Error && e.message === 'email_not_confirmed') {
-        push('verifyEmail', { email: email.trim() })
-      } else {
-        setErrors({ [field]: message })
-      }
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function handleGoogle() {
-    setErrors({})
-    setLoading(true)
-    try {
-      await signInWithGoogle()
-      if (await getSession()) replace('sync')
-    } catch (e) {
-      setErrors({ form: toAuthError(e).message })
+      setErrors({ [field]: message })
     } finally {
       setLoading(false)
     }
@@ -84,18 +64,6 @@ export default function LoginScreen() {
 
   return (
     <AuthLayout title="Đăng nhập">
-      <View style={styles.googleGap}>
-        <Button
-          variant="tonal"
-          label="Đăng nhập với Google"
-          icon={<Image source={googleLogo} style={styles.googleLogo} />}
-          onPress={handleGoogle}
-          disabled={loading}
-        />
-      </View>
-
-      <OrDivider label="hoặc đăng nhập bằng email" />
-
       {biometricReady && (
         <Button
           variant="tonal"
@@ -107,12 +75,12 @@ export default function LoginScreen() {
 
       <View style={styles.fields}>
         <TextField
-          label="Email"
+          label="Email hoặc username"
           placeholder="ban@gmail.com"
           autoCapitalize="none"
-          autoComplete="email"
+          autoComplete="username"
           keyboardType="email-address"
-          textContentType="emailAddress"
+          textContentType="username"
           value={email}
           onChangeText={setEmail}
           error={errors.email}
@@ -161,8 +129,6 @@ export default function LoginScreen() {
 }
 
 const useStyles = makeStyles(({ colors, typography, spacing }) => ({
-  googleGap: { marginTop: spacing.lg },
-  googleLogo: { width: 20, height: 20 },
   fields: { gap: spacing.lg },
   forgot: { ...text('bodyMedium', 'semiBold'), color: colors.primary },
   keepText: { ...typography.bodyLarge, color: colors.onSurface },

@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react'
 import { Text, View } from 'react-native'
 
 import { AuthLayout, Button, FooterPrompt, OtpInput } from '@/components/ui'
-import { resendSignupCode, verifySignupCode } from '@/lib/auth'
-import { toAuthError } from '@/lib/authForm'
-import { replace, useRouteParams } from '@/navigation'
+import { resendOtp, updateMe, verifyOtp } from '@/lib/authApi'
+import { splitFullName, toAuthError } from '@/lib/authForm'
+import { resetTo, useRouteParams } from '@/navigation'
+import { useAuthStore } from '@/store'
 import { makeStyles, text } from '@/theme'
 
 const CODE_LENGTH = 6
@@ -12,7 +13,7 @@ const RESEND_COOLDOWN_SECONDS = 60
 
 export default function VerifyEmailScreen() {
   const styles = useStyles()
-  const { email = '' } = useRouteParams('verifyEmail')
+  const { email = '', fullName = '' } = useRouteParams('verifyEmail')
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -29,8 +30,16 @@ export default function VerifyEmailScreen() {
     setError(null)
     setLoading(true)
     try {
-      await verifySignupCode(email, code)
-      replace('sync')
+      await verifyOtp(email, code)
+      if (fullName) {
+        try {
+          await updateMe(splitFullName(fullName))
+        } catch {
+          // Name is cosmetic; the account exists and the user is signed in.
+        }
+      }
+      await useAuthStore.getState().refreshUser()
+      resetTo('home')
     } catch (e) {
       setError(toAuthError(e).message)
       setCode('')
@@ -43,7 +52,7 @@ export default function VerifyEmailScreen() {
     if (cooldown > 0) return
     setError(null)
     try {
-      await resendSignupCode(email)
+      await resendOtp(email)
       setNotice('Đã gửi lại mã, kiểm tra hộp thư của bạn.')
       setCooldown(RESEND_COOLDOWN_SECONDS)
     } catch (e) {

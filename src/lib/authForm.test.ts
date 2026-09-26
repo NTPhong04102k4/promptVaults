@@ -5,6 +5,7 @@ import {
   toAuthError,
   validateEmail,
   validatePassword,
+  validateTemporaryPassword,
   validateUsername,
 } from './authForm'
 
@@ -29,6 +30,14 @@ describe('validateUsername', () => {
     expect(validateUsername('an.nguyen_1')).toBeNull()
     expect(validateUsername('An')).not.toBeNull()
     expect(validateUsername('has space')).not.toBeNull()
+  })
+})
+
+describe('validateTemporaryPassword', () => {
+  it('requires the 8-character temporary password AioKin e-mails', () => {
+    expect(validateTemporaryPassword('')).toBe('Vui lòng nhập mật khẩu tạm.')
+    expect(validateTemporaryPassword('abc')).toBe('Mật khẩu tạm gồm 8 ký tự.')
+    expect(validateTemporaryPassword(' Ab12Cd34 ')).toBeNull()
   })
 })
 

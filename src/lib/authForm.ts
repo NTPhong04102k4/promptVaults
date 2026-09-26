@@ -26,6 +26,13 @@ export function validateUsername(username: string): string | null {
     : 'Username 3–30 ký tự, chỉ gồm chữ thường, số, "_" hoặc ".".'
 }
 
+// AioKin ResetPasswordRequest.TemporaryPassword is StringLength(8, MinimumLength = 8).
+export function validateTemporaryPassword(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return 'Vui lòng nhập mật khẩu tạm.'
+  return trimmed.length === 8 ? null : 'Mật khẩu tạm gồm 8 ký tự.'
+}
+
 // "Nguyễn Văn An" → firstName "Nguyễn", lastName "Văn An". Stored as-is; display joins them back.
 export function splitFullName(fullName: string): { firstName: string; lastName: string } {
   const [firstName = '', ...rest] = fullName.trim().split(/\s+/)

@@ -19,6 +19,7 @@ export const ROUTES = {
   login: '/onboarding/login',
   verifyEmail: '/onboarding/verify-email',
   forgotPassword: '/onboarding/forgot-password',
+  resetPassword: '/onboarding/reset-password',
   sync: '/onboarding/sync',
   sessions: '/sessions',
   conflict: '/conflict',
@@ -40,8 +41,9 @@ export type RouteParams = {
   welcome: undefined
   signup: undefined
   login: { email?: string }
-  verifyEmail: { email: string }
+  verifyEmail: { email: string; fullName?: string }
   forgotPassword: { email?: string }
+  resetPassword: { email: string }
   sync: undefined
   sessions: undefined
   conflict: { promptId: string }

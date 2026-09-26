@@ -1,18 +1,14 @@
 import { useState } from 'react'
-import { Text } from 'react-native'
 
 import { AuthLayout, Button, FooterPrompt, TextField } from '@/components/ui'
-import { sendPasswordReset } from '@/lib/auth'
+import { forgotPassword } from '@/lib/authApi'
 import { toAuthError, validateEmail } from '@/lib/authForm'
-import { replace, useRouteParams } from '@/navigation'
-import { makeStyles } from '@/theme'
+import { push, replace, useRouteParams } from '@/navigation'
 
 export default function ForgotPasswordScreen() {
-  const styles = useStyles()
   const params = useRouteParams('forgotPassword')
   const [email, setEmail] = useState(params.email ?? '')
   const [error, setError] = useState<string | null>(null)
-  const [sent, setSent] = useState(false)
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit() {
@@ -22,8 +18,9 @@ export default function ForgotPasswordScreen() {
 
     setLoading(true)
     try {
-      await sendPasswordReset(email.trim())
-      setSent(true)
+      // Always 200 whether or not the address exists (AuthController.ForgotPassword).
+      await forgotPassword(email.trim())
+      push('resetPassword', { email: email.trim() })
     } catch (e) {
       setError(toAuthError(e).message)
     } finally {
@@ -35,7 +32,7 @@ export default function ForgotPasswordScreen() {
     <AuthLayout
       align="start"
       title="Quên mật khẩu"
-      subtitle="Nhập email đã đăng ký với tài khoản của bạn. Chúng tôi sẽ gửi link để đặt lại mật khẩu."
+      subtitle="Nhập email đã đăng ký. Chúng tôi sẽ gửi mã xác minh gồm 6 số."
     >
       <TextField
         label="Email"
@@ -45,20 +42,11 @@ export default function ForgotPasswordScreen() {
         keyboardType="email-address"
         textContentType="emailAddress"
         value={email}
-        onChangeText={(value) => {
-          setEmail(value)
-          setSent(false)
-        }}
+        onChangeText={setEmail}
         error={error}
       />
 
-      {sent && (
-        <Text style={styles.notice} accessibilityLiveRegion="polite">
-          Đã gửi link đặt lại mật khẩu tới {email.trim()}. Kiểm tra hộp thư của bạn.
-        </Text>
-      )}
-
-      <Button label={sent ? 'Gửi lại' : 'Gửi'} onPress={handleSubmit} loading={loading} />
+      <Button label="Gửi mã" onPress={handleSubmit} loading={loading} />
 
       <FooterPrompt
         align="left"
@@ -69,7 +57,3 @@ export default function ForgotPasswordScreen() {
     </AuthLayout>
   )
 }
-
-const useStyles = makeStyles(({ colors, typography }) => ({
-  notice: { ...typography.bodyMedium, color: colors.primary },
-}))
