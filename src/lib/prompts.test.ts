@@ -6,6 +6,7 @@ jest.mock('expo-crypto', () => {
 })
 
 import { getDb, LOCAL_SPACE_ID } from './db'
+import { pendingCount } from './outbox'
 import {
   createPrompt,
   deletePrompt,
@@ -86,6 +87,76 @@ describe('prompts', () => {
     const searched = await listPrompts(LOCAL_SPACE_ID, { query: 'TikTok' })
     expect(searched.map((p) => p.id)).toContain(marketing.id)
     expect(searched.map((p) => p.id)).not.toContain(content.id)
+  })
+})
+
+// Fix round 1, Task 14: the backend permanently rejects a title over 200 chars or a category
+// name over 80 chars (AioKin SyncService.cs ValidatePayload, :1257/:1266), but the push client
+// currently can't tell that rejection apart from a transient one by message text alone (gap
+// G14) — it would retry forever. These guards stop an over-limit prompt from ever reaching the
+// outbox in the first place, on a synced space where an outbox row would actually be enqueued.
+describe('sync length limits (gap G14 guard)', () => {
+  const SPACE = 'aaaaaaaa-0000-4000-8000-000000000099'
+
+  beforeEach(async () => {
+    const db = await getDb()
+    await db.execAsync('DELETE FROM sync_outbox')
+    await db.runAsync(
+      "INSERT OR IGNORE INTO spaces (id, kind, name, can_manage, created_at) VALUES (?, 'personal', 'S', 1, 1)",
+      SPACE,
+    )
+  })
+
+  it('rejects a title over 200 characters before it ever reaches the outbox', async () => {
+    const db = await getDb()
+    const title = 'x'.repeat(201)
+
+    await expect(
+      createPrompt({ spaceId: SPACE, title, content: 'Nội dung', category: null }),
+    ).rejects.toThrow('title_too_long')
+
+    expect(await pendingCount(db)).toBe(0)
+    expect(await listPrompts(SPACE)).toEqual([])
+  })
+
+  it('rejects a category name over 80 characters before it ever reaches the outbox', async () => {
+    const db = await getDb()
+    const category = 'y'.repeat(81)
+
+    await expect(
+      createPrompt({ spaceId: SPACE, title: 'Tiêu đề', content: 'Nội dung', category }),
+    ).rejects.toThrow('category_too_long')
+
+    expect(await pendingCount(db)).toBe(0)
+  })
+
+  it('also guards an update that would push a title over the limit, leaving the prompt untouched', async () => {
+    const prompt = await createPrompt({
+      spaceId: SPACE,
+      title: 'Tiêu đề ngắn',
+      content: 'Nội dung',
+      category: null,
+    })
+    const db = await getDb()
+    const before = await pendingCount(db)
+
+    await expect(
+      updatePrompt(prompt.id, { title: 'z'.repeat(201), content: 'Nội dung', category: null }),
+    ).rejects.toThrow('title_too_long')
+
+    expect(await pendingCount(db)).toBe(before) // no new outbox row from the rejected update
+    expect((await getPrompt(prompt.id))?.title).toBe('Tiêu đề ngắn') // unchanged
+  })
+
+  it('allows a title and category exactly at the limit', async () => {
+    const title = 'x'.repeat(200)
+    const category = 'y'.repeat(80)
+
+    const created = await createPrompt({ spaceId: SPACE, title, content: 'Nội dung', category })
+
+    expect(created.title).toHaveLength(200)
+    const db = await getDb()
+    expect(await pendingCount(db)).toBe(1)
   })
 })
 

@@ -3,7 +3,7 @@ import { ScrollView, Text, TextInput, View } from 'react-native'
 
 import { Icon } from '@/components/Icon'
 import { Button, FilterChip, IconButton, TextField } from '@/components/ui'
-import { createPrompt, getPrompt, PROMPT_CATEGORIES, updatePrompt } from '@/lib/prompts'
+import { createPrompt, getPrompt, MAX_TITLE_LENGTH, PROMPT_CATEGORIES, updatePrompt } from '@/lib/prompts'
 import { goBack, useRouteParams } from '@/navigation'
 import { useSpaceStore } from '@/store'
 import { makeStyles, text, useTheme } from '@/theme'
@@ -65,6 +65,7 @@ export default function PromptEditScreen() {
         placeholder="VD: Viết caption Instagram"
         value={title}
         onChangeText={setTitle}
+        maxLength={MAX_TITLE_LENGTH}
       />
 
       <View style={styles.field}>

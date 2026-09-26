@@ -8,6 +8,23 @@ import { enqueue } from './outbox'
 export const PROMPT_CATEGORIES = ['Marketing', 'Content', 'Năng suất'] as const
 export type PromptCategory = (typeof PROMPT_CATEGORIES)[number]
 
+// Match AioKin's hard limits exactly (Services/Vault/SyncService.cs ValidatePayload: title
+// `:1257`, categoryName `:1266`) so a prompt that exceeds them can never reach the outbox. The
+// backend's rejection for these is permanent (unrecoverable by retry), but the push client
+// (syncPush.ts) currently can only tell a permanent rejection apart from a transient server
+// fault by matching an exact message prefix (gap G14) — anything else, including a length
+// validation failure, is treated as retryable. Without this guard, an over-limit title/category
+// (pasted text today; a future feature tomorrow) would retry forever with `attempts` climbing
+// unboundedly and no feedback to the user, and — because `claimBatch` returns one row per
+// prompt, oldest first — later edits to that SAME prompt could never sync either.
+export const MAX_TITLE_LENGTH = 200
+export const MAX_CATEGORY_LENGTH = 80
+
+function assertWithinSyncLimits(input: { title: string; category: string | null }): void {
+  if (input.title.length > MAX_TITLE_LENGTH) throw new Error('title_too_long')
+  if (input.category && input.category.length > MAX_CATEGORY_LENGTH) throw new Error('category_too_long')
+}
+
 export type Prompt = {
   id: string
   spaceId: string
@@ -131,6 +148,7 @@ async function isSyncedSpace(db: SQLiteDatabase, spaceId: string): Promise<boole
 }
 
 export async function createPrompt(input: CreatePromptInput): Promise<Prompt> {
+  assertWithinSyncLimits(input)
   const db = await getDb()
   const id = Crypto.randomUUID()
   const now = Date.now()
@@ -168,6 +186,7 @@ export async function createPrompt(input: CreatePromptInput): Promise<Prompt> {
 export type UpdatePromptInput = { title: string; content: string; category: string | null }
 
 export async function updatePrompt(id: string, input: UpdatePromptInput): Promise<void> {
+  assertWithinSyncLimits(input)
   const db = await getDb()
   const row = await db.getFirstAsync<{ space_id: string; version: number }>(
     'SELECT space_id, version FROM prompts WHERE id = ?',
