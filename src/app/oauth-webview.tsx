@@ -27,8 +27,16 @@ export default function OAuthWebViewScreen() {
   // the injected shim on every navigation); only the first result should ever be acted on.
   const settled = useRef(false)
 
+  // ReactNativeWebView.postMessage is injected into every frame this WebView ever loads —
+  // including the provider's own pages mid-redirect, not just our finalize page — so a message
+  // is only trustworthy when it actually came from finalize. There's no origin on
+  // WebViewMessageEvent, so nativeEvent.url (the page that called postMessage) is the closest
+  // proxy available.
+  const finalizeUrlPrefix = resolveUrl(`/auth/finalize/${provider}`)
+
   async function handleMessage(event: WebViewMessageEvent) {
     if (settled.current) return
+    if (!event.nativeEvent.url.startsWith(finalizeUrlPrefix)) return
     const result = await handleOAuthPopupMessage(event.nativeEvent.data)
     if (settled.current) return
     settled.current = true

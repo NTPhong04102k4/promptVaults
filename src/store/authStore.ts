@@ -4,6 +4,7 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { clearSyncedData } from '@/lib/accountData'
 import { type AccountProfile, getMe, revokeSession } from '@/lib/authApi'
 import { LargeSecureStore } from '@/lib/secureStorage'
+import { signOutSocialProviders } from '@/lib/socialSignOut'
 import { awaitIdle, runSync } from '@/lib/syncEngine'
 import {
   clearTokens,
@@ -129,13 +130,16 @@ export const useAuthStore = create<AuthState>()(
         // session and never touches the token store, so however late it settles it can't
         // affect a newer sign-in.
         const revoke = tokens ? revokeSession(tokens) : Promise.resolve()
+        // Runs alongside revoke — see socialSignOut.ts for why this is needed and why it's
+        // best-effort (never throws, so Promise.all below can't reject on it either).
+        const socialSignOut = signOutSocialProviders()
         await awaitIdle()
         await clearSyncedData()
         set({ user: null })
         // Only once tokens AND data are gone — a failed wipe (thrown above) or token delete
         // leaves the marker for a retry on the next cold start.
         if (tokensCleared) await setSignOutPending(false)
-        await withTimeout(revoke, NETWORK_STEP_TIMEOUT_MS)
+        await withTimeout(Promise.all([revoke, socialSignOut]), NETWORK_STEP_TIMEOUT_MS)
       },
     }),
     {

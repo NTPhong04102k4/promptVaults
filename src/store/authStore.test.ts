@@ -16,6 +16,9 @@ jest.mock('@/lib/tokenStore', () => ({
   onTokensCleared: jest.fn(),
   setSignOutPending: jest.fn(),
 }))
+jest.mock('@/lib/socialSignOut', () => ({
+  signOutSocialProviders: jest.fn(async () => undefined),
+}))
 
 const mockMemory = new Map<string, string>()
 jest.mock('@/lib/secureStorage', () => ({

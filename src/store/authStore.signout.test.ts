@@ -12,6 +12,9 @@ jest.mock('@/lib/syncEngine', () => ({
   runSync: jest.fn(async () => undefined),
   awaitIdle: jest.fn(async () => undefined),
 }))
+jest.mock('@/lib/socialSignOut', () => ({
+  signOutSocialProviders: jest.fn(async () => undefined),
+}))
 
 const mockMemory = new Map<string, string>()
 jest.mock('@/lib/secureStorage', () => ({
